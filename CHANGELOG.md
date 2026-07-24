@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (symbol search and documentation)
+
+- `freqtrade_search_codebase` now searches a **static index built with `ast`**
+  instead of importing the freqtrade package tree. Against freqtrade 2026.6 the
+  first search went from ~2s warm (9-21s cold) to **0.37s**, imports **zero**
+  freqtrade modules (previously ~250, pulling in ccxt, pandas and sqlalchemy),
+  and reports **zero** skipped modules where the import-based scan silently lost
+  36 of them to missing optional dependencies. Symbols re-exported from a
+  package `__init__` are indexed too, so the documented import path
+  (`freqtrade.strategy.IStrategy`) is discoverable alongside the definition site
+  (`freqtrade.strategy.interface.IStrategy`).
+  Limitation: only statically declared, top-level symbols are visible; anything
+  created at runtime is not. Live objects are still introspected with `inspect`
+  where signatures and docstrings are needed.
+- The depth limit that silently hid modules more than four levels deep is gone —
+  it existed to bound import cost that no longer exists.
+- `freqtrade_get_doc` returns pages in slices and can return a single section.
+  It gained `section`, `offset` and `max_chars` (default 20000), and the
+  response now carries `sections`, `offset`, `returned_chars`, `total_chars`,
+  `truncated` and `next_offset`. `strategy-callbacks` used to arrive as 69 KB
+  (~17k tokens) in one response; it is now ~5k tokens per slice, and asking for
+  one of its 14 sections costs as little as ~90 tokens. **Breaking change** for
+  anyone relying on `content` always holding the whole page.
+
+### Fixed (correctness)
+
+- `source_file` no longer reports a bogus path. It was derived from the first
+  `/freqtrade/` found in the absolute path, so any ancestor directory named
+  `freqtrade` — the layout freqtrade's own docs and Docker image use — produced
+  e.g. `freqtrade/.venv/lib/.../interface.py`. It is now computed relative to
+  the real package directory, and falls back to the bare filename instead of
+  leaking an absolute path.
+- Version comparison uses `packaging.version` (PEP 440) instead of a hand-rolled
+  numeric-prefix parser that mapped `2026.2rc1` onto `(2026, 2)`, letting a
+  release candidate pass as its final release. A version that cannot be parsed
+  now logs a warning and starts anyway, rather than being silently mangled.
+- `TTLCache` is bounded (`maxsize`, default 128, LRU eviction). Expired entries
+  are only dropped when their key is read again, so without a bound every
+  distinct query held its full result list for the whole hour-long TTL.
+
+### Fixed
+
+- Tools no longer block the server. FastMCP calls synchronous tool functions
+  inline on the event loop, so every blocking import or file read stalled the
+  whole server — the first symbol search alone held it for seconds, during
+  which no other call, keepalive or cancellation could be processed. All tools
+  are now coroutines that offload their work to a worker thread.
+- `freqtrade_search_codebase` no longer aborts when part of the freqtrade tree
+  fails to import. `pkgutil.walk_packages` was called without `onerror`, which
+  makes it re-raise anything that is not an `ImportError`, and `_import_module`
+  itself only caught `ImportError`. Both now handle any exception *and*
+  `SystemExit` — `freqtrade.plot.plotting` calls `exit(1)` at import time when
+  the optional plotly dependency is missing, which a plain `except Exception`
+  does not catch.
+- Startup now verifies that `freqtrade.strategy.interface` actually imports and
+  says so up front. `check_freqtrade_version` only reads distribution metadata,
+  which stays valid on an installation that cannot be imported, so the server
+  used to start silently and then fail on every introspection call.
+  The check is a **warning, not a fatal error**: freqtrade declares `scipy`
+  only under its `hyperopt` extra while `freqtrade.data.metrics` imports it
+  unconditionally, so a stock `pip install freqtrade` genuinely cannot import
+  the strategy interface. Symbol search reads the source statically and the
+  documentation tools never touch freqtrade, so the server stays useful; the
+  warning names the affected tools and the fix
+  (`pip install freqtrade[hyperopt]`).
+- An unknown `FREQTRADE_MCP_LOG_LEVEL` no longer crashes the server at startup.
+  The level was resolved with `getattr(logging, name)`, which happily returns
+  non-level attributes such as `BASIC_FORMAT`; `setLevel` then raised
+  `ValueError`. Levels are now resolved from an explicit allow-list.
+
+### Changed
+
+- `freqtrade_search_codebase` returns a result envelope instead of a bare list:
+  `matches`, `returned`, `total_matches`, `truncated`, `skipped_modules` and
+  `skipped_module_count`. Results are capped by a new `max_results` parameter
+  (1-500, default 50). A `.*` query previously returned ~2500 symbols and over
+  200 KB of JSON in a single response, and silently omitted every module that
+  failed to import. **Breaking change** for anyone consuming the old list shape.
+- Logging setup is idempotent (repeated calls no longer stack handlers) and the
+  `freqtrade_mcp` logger no longer propagates to the root logger, so a root
+  handler attached to stdout cannot corrupt the JSON-RPC stream.
+
+### Added
+
+- `tests/test_integration.py`: smoke tests against a real freqtrade
+  installation, skipped when freqtrade is not importable. The rest of the suite
+  runs on fake modules and is blind to import failures and path layout — this
+  is what surfaced the `SystemExit` bug above. Run with `pytest -m integration`.
+- `freqtrade_mcp.symbols`: the static symbol index described above.
+- CI installs `freqtrade[hyperopt]` and runs the integration tests as a
+  separate step that **fails if they were skipped**. Without the extra they
+  skipped silently, so the only tests exercising the live package never ran.
+- `anyio` and `packaging` are now explicit dependencies (previously only
+  transitive, via `mcp` and `freqtrade` respectively).
+
+### Removed
+
+- Automatic PyPI publishing in this fork. The `freqtrade-mcp-server` project on
+  PyPI, along with the author and URLs in `pyproject.toml`, belongs to the
+  upstream repository, and trusted publishing is configured there rather than
+  here. The workflow now builds on demand (`workflow_dispatch`) so packaging
+  stays verifiable; changes made here are meant to go upstream as pull requests.
+
 ## [0.1.2] - 2026-07-19
 
 ### Changed

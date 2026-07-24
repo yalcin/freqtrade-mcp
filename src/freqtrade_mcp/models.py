@@ -2,6 +2,13 @@
 
 from pydantic import BaseModel, Field
 
+from freqtrade_mcp.constants import (
+    DEFAULT_DOC_MAX_CHARS,
+    DEFAULT_SYMBOL_SEARCH_RESULTS,
+    MAX_DOC_MAX_CHARS,
+    MAX_SYMBOL_SEARCH_RESULTS,
+)
+
 # --- Input Models ---
 
 
@@ -68,6 +75,12 @@ class SearchCodebaseInput(BaseModel):
             "Supports basic regex (alphanumeric, underscores, wildcards)."
         ),
         max_length=256,
+    )
+    max_results: int = Field(
+        default=DEFAULT_SYMBOL_SEARCH_RESULTS,
+        description="Maximum number of symbols to return (1-500).",
+        ge=1,
+        le=MAX_SYMBOL_SEARCH_RESULTS,
     )
 
 
@@ -152,6 +165,26 @@ class GetDocInput(BaseModel):
         ),
         max_length=256,
     )
+    section: str | None = Field(
+        default=None,
+        description=(
+            "Optional section heading to return instead of the whole page. "
+            "Matched case-insensitively against the page's '##' headings, "
+            "which are always listed in the 'sections' field of the response."
+        ),
+        max_length=256,
+    )
+    offset: int = Field(
+        default=0,
+        description="Character offset to resume reading from (see next_offset).",
+        ge=0,
+    )
+    max_chars: int = Field(
+        default=DEFAULT_DOC_MAX_CHARS,
+        description="Maximum number of characters to return (1-100000).",
+        ge=1,
+        le=MAX_DOC_MAX_CHARS,
+    )
 
 
 # --- Output Models ---
@@ -232,6 +265,31 @@ class SymbolMatch(BaseModel):
     kind: str = Field(description="Symbol kind: 'class', 'function', 'constant', 'enum'.")
 
 
+class SymbolSearchResult(BaseModel):
+    """Result of a codebase symbol search.
+
+    Completeness is reported explicitly: a caller must be able to tell a
+    genuinely empty result from a truncated one, and a full scan from one where
+    part of the freqtrade tree could not be imported.
+    """
+
+    matches: list[SymbolMatch] = Field(description="Matching symbols (capped at max_results).")
+    returned: int = Field(description="Number of symbols in this response.")
+    total_matches: int = Field(description="Total symbols matched before truncation.")
+    truncated: bool = Field(
+        description="True if more symbols matched than were returned; refine the query."
+    )
+    skipped_modules: list[str] = Field(
+        description=(
+            "Modules whose source could not be read or parsed, and which were "
+            "therefore not searched. Results are incomplete when this is non-empty."
+        )
+    )
+    skipped_module_count: int = Field(
+        description="Total number of skipped modules (skipped_modules may be truncated)."
+    )
+
+
 class CallbackInfo(BaseModel):
     """Detailed callback method information."""
 
@@ -284,9 +342,30 @@ class DocSearchResult(BaseModel):
 
 
 class DocContent(BaseModel):
-    """Full content of a documentation page."""
+    """A page of documentation content.
+
+    Pages are returned in slices: freqtrade's largest page is ~70 KB, which is
+    ~17k tokens in one response. Read the whole page by following
+    ``next_offset``, or jump straight to a heading with ``section``.
+    """
 
     topic: str = Field(description="Topic identifier.")
     title: str = Field(description="Document title.")
-    content: str = Field(description="Full markdown content.")
-    size_bytes: int = Field(description="Content size in bytes.")
+    content: str = Field(description="Markdown content for the requested slice.")
+    size_bytes: int = Field(description="Size of the whole page in bytes.")
+    section: str | None = Field(
+        default=None, description="Section heading returned, if one was requested."
+    )
+    sections: list[str] = Field(
+        default_factory=list,
+        description="All '##' headings in the page; usable as the 'section' argument.",
+    )
+    offset: int = Field(default=0, description="Character offset this slice starts at.")
+    returned_chars: int = Field(default=0, description="Number of characters in this slice.")
+    total_chars: int = Field(
+        default=0, description="Total characters available in the requested scope."
+    )
+    truncated: bool = Field(default=False, description="True if content remains after this slice.")
+    next_offset: int | None = Field(
+        default=None, description="Offset to pass back to read the next slice, if any."
+    )

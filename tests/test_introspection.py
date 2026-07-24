@@ -1,9 +1,12 @@
 """Tests for the introspection engine."""
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from freqtrade_mcp.constants import MAX_SYMBOL_SEARCH_RESULTS
 from freqtrade_mcp.exceptions import (
     ClassNotFoundError,
     IntrospectionError,
@@ -29,6 +32,7 @@ from freqtrade_mcp.models import (
     MethodSignature,
     MethodSummary,
     SymbolMatch,
+    SymbolSearchResult,
 )
 
 
@@ -284,19 +288,67 @@ class TestGetDataframeColumns:
 
 
 class TestSearchCodebase:
-    """Tests for search_codebase."""
+    """Tests for search_codebase.
 
-    def test_search_finds_class(self, fake_freqtrade_modules: Any) -> None:
-        """Should find classes matching pattern."""
-        # Note: search_codebase walks the package tree, which is limited
-        # with fake modules since __path__ is empty. Test with direct module.
-        results = search_codebase("IStrategy")
-        # May or may not find it depending on fake module setup
-        assert isinstance(results, list)
+    The search runs against the statically built symbol index, so these use the
+    fake *source tree* fixture rather than the in-memory module fixture.
+    """
 
-    def test_search_returns_symbol_matches(self, fake_freqtrade_modules: Any) -> None:
-        """Results should be SymbolMatch instances."""
-        results = search_codebase(".*")
-        for r in results:
+    def test_search_finds_class(self, fake_freqtrade_source: Path) -> None:
+        """Should find classes matching a pattern."""
+        result = search_codebase("IStrategy")
+        assert isinstance(result, SymbolSearchResult)
+        assert any(m.name == "IStrategy" for m in result.matches)
+
+    def test_search_returns_symbol_matches(self, fake_freqtrade_source: Path) -> None:
+        """Results should be SymbolMatch instances with a known kind."""
+        result = search_codebase(".*")
+        assert result.matches
+        for r in result.matches:
             assert isinstance(r, SymbolMatch)
             assert r.kind in {"class", "function", "constant", "enum"}
+
+    def test_reports_truncation(self, fake_freqtrade_source: Path) -> None:
+        """A capped search must report the full match count and truncation."""
+        full = search_codebase(".*", max_results=MAX_SYMBOL_SEARCH_RESULTS)
+        assert full.truncated is False
+        assert full.returned == full.total_matches
+
+        capped = search_codebase(".*", max_results=1)
+        assert capped.returned == 1
+        assert len(capped.matches) == 1
+        assert capped.total_matches == full.total_matches
+        assert capped.truncated is True
+
+    def test_max_results_is_clamped(self, fake_freqtrade_source: Path) -> None:
+        """Out-of-range values are clamped rather than trusted blindly."""
+        result = search_codebase(".*", max_results=10_000)
+        assert result.returned <= MAX_SYMBOL_SEARCH_RESULTS
+
+    def test_reports_unparseable_modules(self, fake_freqtrade_source: Path) -> None:
+        """Modules that cannot be parsed must be reported, not dropped silently."""
+        result = search_codebase(".*")
+        assert "freqtrade.broken" in result.skipped_modules
+        assert result.skipped_module_count == 1
+        # The rest of the tree was still indexed.
+        assert result.total_matches > 0
+
+    def test_broken_module_does_not_abort_search(self, fake_freqtrade_source: Path) -> None:
+        """A syntax error in one file must not fail the whole search.
+
+        The previous implementation imported every module: a failure in one of
+        them (or a module calling exit() when an optional dependency was
+        missing) aborted the entire tool call.
+        """
+        result = search_codebase("IStrategy")
+        assert any(m.name == "IStrategy" for m in result.matches)
+
+    def test_search_is_case_insensitive(self, fake_freqtrade_source: Path) -> None:
+        """Patterns are compiled with IGNORECASE."""
+        assert search_codebase("istrategy").total_matches > 0
+
+    def test_no_module_is_imported(self, fake_freqtrade_source: Path) -> None:
+        """Searching must not import anything from the freqtrade namespace."""
+        before = {name for name in sys.modules if name.startswith("freqtrade.")}
+        search_codebase(".*")
+        assert {name for name in sys.modules if name.startswith("freqtrade.")} == before

@@ -34,7 +34,9 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 
 - **Read-only**: No trading, no exchange connections, no side effects
 - **Input validation**: All LLM inputs validated with regex whitelists
-- **No eval/exec**: Only uses Python's `inspect` module
+- **No eval/exec**: Only uses Python's `inspect` and `ast` modules
+- **No import side effects in search**: symbol search parses source with `ast`
+  rather than importing it, so no third-party module-level code runs
 - **Namespace restricted**: Only inspects `freqtrade.*` modules
 - **stdio transport**: Local-only, no network exposure
 
@@ -147,14 +149,14 @@ FREQTRADE_DOCS_PATH=/path/to/freqtrade/docs freqtrade-mcp
 | `freqtrade_get_class_info` | Inspect any freqtrade class |
 | `freqtrade_list_enums` | List trading-related enums |
 | `freqtrade_get_enum_values` | Get values of a specific enum |
-| `freqtrade_search_codebase` | Search for symbols by name pattern |
+| `freqtrade_search_codebase` | Search for symbols by name pattern (statically indexed, no imports) |
 | `freqtrade_get_callback_info` | Get detailed callback method info |
 | `freqtrade_get_config_schema` | Browse configuration keys |
 | `freqtrade_get_dataframe_columns` | List DataFrame columns in strategy methods |
 | `freqtrade_get_version_info` | Get version information |
 | `freqtrade_list_docs` | List available documentation topics |
 | `freqtrade_search_docs` | Full-text search across all documentation |
-| `freqtrade_get_doc` | Read a specific documentation page |
+| `freqtrade_get_doc` | Read a documentation page, or one section of it |
 
 ## Configuration
 
@@ -183,6 +185,10 @@ pip install -e ".[dev]"
 
 # Run tests
 pytest
+
+# Run only the smoke tests against a real freqtrade installation
+# (skipped automatically when freqtrade is not importable)
+pytest -m integration
 
 # Lint
 ruff check src/ tests/

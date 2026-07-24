@@ -206,6 +206,30 @@ def validate_doc_topic(topic: str) -> str:
     return topic
 
 
+def validate_doc_section(section: str) -> str:
+    """Validate a documentation section heading.
+
+    Headings are free-form markdown text, so this only bounds the length and
+    rejects empty input. The value is matched against the headings actually
+    present in the page, never used to build a path or a pattern.
+
+    Args:
+        section: Section heading to validate.
+
+    Returns:
+        The stripped section heading.
+
+    Raises:
+        ValidationError: If the section is empty or too long.
+    """
+    normalized = section.strip()
+    if not normalized or len(normalized) > MAX_INPUT_LENGTH:
+        msg = f"Invalid doc section: must be 1-{MAX_INPUT_LENGTH} non-empty characters."
+        raise ValidationError(msg)
+
+    return normalized
+
+
 def validate_doc_search_query(query: str) -> str:
     """Validate a documentation search query.
 

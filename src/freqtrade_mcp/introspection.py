@@ -9,16 +9,18 @@ import enum
 import importlib
 import inspect
 import logging
-import pkgutil
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 from freqtrade_mcp.cache import ttl_cache
 from freqtrade_mcp.constants import (
-    ALLOWED_TOP_LEVEL_MODULE,
     CONFIG_SECTIONS,
     DATAFRAME_CONTEXTS,
+    DEFAULT_SYMBOL_SEARCH_RESULTS,
     ISTRATEGY_CLASS_PATH,
+    MAX_REPORTED_SKIPPED_MODULES,
+    MAX_SYMBOL_SEARCH_RESULTS,
     STRATEGY_CALLBACKS,
 )
 from freqtrade_mcp.exceptions import (
@@ -38,8 +40,9 @@ from freqtrade_mcp.models import (
     MethodSignature,
     MethodSummary,
     ParameterInfo,
-    SymbolMatch,
+    SymbolSearchResult,
 )
+from freqtrade_mcp.symbols import _freqtrade_package_root, build_symbol_index
 from freqtrade_mcp.validators import (
     validate_class_path,
     validate_filter_string,
@@ -64,8 +67,14 @@ def _import_module(module_path: str) -> ModuleType:
     """
     try:
         return importlib.import_module(module_path)
-    except ImportError as e:
-        msg = f"Cannot import module '{module_path}': {e}"
+    except (Exception, SystemExit) as e:
+        # Deliberately broad: importing a module runs its top-level code, which
+        # can raise anything. SystemExit is included on purpose and is not
+        # theoretical — freqtrade.plot.plotting calls exit(1) at import time
+        # when the optional plotly dependency is missing, and SystemExit is a
+        # BaseException that an `except Exception` would let through.
+        # KeyboardInterrupt is deliberately not caught.
+        msg = f"Cannot import module '{module_path}': {type(e).__name__}: {e}"
         raise ModuleImportError(msg) from e
 
 
@@ -173,11 +182,17 @@ def _get_source_file(obj: Any) -> str | None:
         return None
 
     # Make it relative if possible
-    ft_marker = f"/{ALLOWED_TOP_LEVEL_MODULE}/"
-    idx = source_file.find(ft_marker)
-    if idx != -1:
-        return source_file[idx + 1 :]
-    return source_file
+    # Anchor on the real package directory. Searching for the first
+    # "/freqtrade/" in the absolute path breaks whenever an ancestor directory
+    # is named freqtrade — the layout freqtrade's own docs and Docker image
+    # use — and would report e.g. "freqtrade/.venv/lib/.../interface.py".
+    try:
+        package_root = _freqtrade_package_root().parent
+        return str(Path(source_file).relative_to(package_root))
+    except (ModuleImportError, ValueError):
+        # Outside the freqtrade package: return the bare filename rather than
+        # leaking an absolute filesystem path.
+        return Path(source_file).name
 
 
 # --- Public API ---
@@ -395,76 +410,49 @@ def get_enum_values(enum_path: str) -> EnumDetail:
 
 
 @ttl_cache()
-def search_codebase(query: str) -> list[SymbolMatch]:
+def search_codebase(
+    query: str,
+    max_results: int = DEFAULT_SYMBOL_SEARCH_RESULTS,
+) -> SymbolSearchResult:
     """Search for symbols in the freqtrade codebase by name pattern.
+
+    Searches a statically built index (see :mod:`freqtrade_mcp.symbols`), so no
+    freqtrade module is imported and no optional dependency can break the scan.
+    Modules whose source could not be parsed are reported in
+    ``skipped_modules`` rather than dropped silently, and the match count is
+    reported separately from the (capped) list of returned symbols.
 
     Args:
         query: Validated regex search pattern.
+        max_results: Maximum number of symbols to return.
 
     Returns:
-        List of matching symbols.
+        Search result with matches, truncation state, and skipped modules.
+
+    Raises:
+        ModuleImportError: If the freqtrade package cannot be located.
     """
     pattern = validate_search_pattern(query)
-    matches: list[SymbolMatch] = []
-    seen: set[tuple[str, str, str]] = set()
-    visited_modules: set[str] = set()
+    capped_results = max(1, min(max_results, MAX_SYMBOL_SEARCH_RESULTS))
 
-    def _scan_module(module_path: str) -> None:
-        if module_path in visited_modules:
-            return
-        visited_modules.add(module_path)
+    index = build_symbol_index()
+    matches = [symbol for symbol in index.symbols if pattern.search(symbol.name)]
+    returned = matches[:capped_results]
 
-        try:
-            mod = _import_module(module_path)
-        except ModuleImportError:
-            return
+    if index.unreadable_modules:
+        logger.warning(
+            "Symbol search results are incomplete: %d module(s) could not be parsed.",
+            len(index.unreadable_modules),
+        )
 
-        for name in dir(mod):
-            if name.startswith("_"):
-                continue
-            if not pattern.search(name):
-                continue
-
-            obj = getattr(mod, name, None)
-            if obj is None:
-                continue
-
-            # Determine kind
-            if isinstance(obj, type):
-                if issubclass(obj, enum.Enum) and obj is not enum.Enum:
-                    kind = "enum"
-                else:
-                    kind = "class"
-            elif callable(obj):
-                kind = "function"
-            else:
-                kind = "constant"
-
-            # Avoid duplicates from re-exports
-            key = (name, module_path, kind)
-            if key not in seen:
-                seen.add(key)
-                matches.append(SymbolMatch(name=name, module=module_path, kind=kind))
-
-    # Walk freqtrade package tree
-    try:
-        ft_module = importlib.import_module(ALLOWED_TOP_LEVEL_MODULE)
-    except ImportError:
-        return matches
-
-    _scan_module(ALLOWED_TOP_LEVEL_MODULE)
-
-    if hasattr(ft_module, "__path__"):
-        for _importer, modname, _ispkg in pkgutil.walk_packages(
-            ft_module.__path__, prefix=f"{ALLOWED_TOP_LEVEL_MODULE}."
-        ):
-            # Limit search depth for performance
-            if modname.count(".") > 4:
-                continue
-            _scan_module(modname)
-
-    matches.sort(key=lambda m: (m.name, m.module))
-    return matches
+    return SymbolSearchResult(
+        matches=returned,
+        returned=len(returned),
+        total_matches=len(matches),
+        truncated=len(matches) > len(returned),
+        skipped_modules=index.unreadable_modules[:MAX_REPORTED_SKIPPED_MODULES],
+        skipped_module_count=len(index.unreadable_modules),
+    )
 
 
 def get_callback_info(callback_name: str) -> CallbackInfo:
