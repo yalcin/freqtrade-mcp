@@ -300,6 +300,20 @@ class TestGetDocSections:
         assert result is not None
         assert "Calculate custom stoploss." in result.content
 
+    def test_empty_section_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """An empty section must not silently mean "the whole page".
+
+        A truthiness check let "" through unvalidated while rejecting "   ",
+        so the same intent produced two different behaviours.
+        """
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        with pytest.raises(ValidationError):
+            get_doc("strategy-callbacks", section="")
+        with pytest.raises(ValidationError):
+            get_doc("strategy-callbacks", section="   ")
+
     def test_unknown_section_lists_the_valid_ones(
         self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
     ) -> None:

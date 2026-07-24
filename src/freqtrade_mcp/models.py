@@ -281,8 +281,8 @@ class SymbolSearchResult(BaseModel):
     )
     skipped_modules: list[str] = Field(
         description=(
-            "Modules that could not be imported and were therefore not searched. "
-            "Results are incomplete when this is non-empty."
+            "Modules whose source could not be read or parsed, and which were "
+            "therefore not searched. Results are incomplete when this is non-empty."
         )
     )
     skipped_module_count: int = Field(

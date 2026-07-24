@@ -369,7 +369,9 @@ def get_doc(
         DocSectionNotFoundError: If the requested section does not exist.
     """
     validated_topic = validate_doc_topic(topic)
-    validated_section = validate_doc_section(section) if section else None
+    # Explicit None check: with a truthiness test an empty string silently
+    # meant "whole page", while a whitespace-only one was rejected.
+    validated_section = validate_doc_section(section) if section is not None else None
     capped_chars = max(1, min(max_chars, MAX_DOC_MAX_CHARS))
     start = max(0, offset)
 

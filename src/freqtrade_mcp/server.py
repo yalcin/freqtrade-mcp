@@ -262,7 +262,7 @@ async def freqtrade_search_codebase(
     concluding that a symbol does not exist: a broad pattern such as ".*"
     matches thousands of symbols and only the first ``max_results`` are
     returned. Check ``skipped_modules`` too — a non-empty list means part of
-    the freqtrade tree could not be imported and was never searched.
+    the freqtrade tree could not be parsed and was never searched.
 
     Args:
         query: Search pattern for symbol names. Supports basic regex.

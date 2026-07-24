@@ -90,7 +90,12 @@ def check_freqtrade_importable() -> None:
     module_path = ISTRATEGY_CLASS_PATH.rsplit(".", maxsplit=1)[0]
     try:
         importlib.import_module(module_path)
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
+        # SystemExit is included deliberately: freqtrade.plot.plotting calls
+        # exit(1) at import time when plotly is missing. Being a BaseException
+        # it would escape both this handler and main()'s, killing the server
+        # with no diagnostic instead of degrading to a warning.
+        # KeyboardInterrupt is deliberately not caught.
         msg = (
             f"freqtrade is installed but '{module_path}' cannot be imported "
             f"({type(exc).__name__}: {exc}). This usually means an optional "

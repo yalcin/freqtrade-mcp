@@ -129,3 +129,20 @@ class TestCheckFreqtradeImportable:
             pytest.raises(VersionError, match="RuntimeError"),
         ):
             check_freqtrade_importable()
+
+    def test_system_exit_becomes_a_version_error(self) -> None:
+        """A module calling exit() at import time must not kill the server.
+
+        freqtrade.plot.plotting calls exit(1) when plotly is missing.
+        SystemExit is a BaseException, so it would escape both this check and
+        main()'s handler, terminating the server with no diagnostic instead of
+        degrading to a warning.
+        """
+        with (
+            patch(
+                "freqtrade_mcp._version_check.importlib.import_module",
+                side_effect=SystemExit(1),
+            ),
+            pytest.raises(VersionError, match="SystemExit"),
+        ):
+            check_freqtrade_importable()
