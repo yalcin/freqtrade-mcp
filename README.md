@@ -184,6 +184,10 @@ pip install -e ".[dev]"
 # Run tests
 pytest
 
+# Run only the smoke tests against a real freqtrade installation
+# (skipped automatically when freqtrade is not importable)
+pytest -m integration
+
 # Lint
 ruff check src/ tests/
 

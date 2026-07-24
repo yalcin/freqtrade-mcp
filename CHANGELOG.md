@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tools no longer block the server. FastMCP calls synchronous tool functions
+  inline on the event loop, so every blocking import or file read stalled the
+  whole server — the first symbol search alone held it for seconds, during
+  which no other call, keepalive or cancellation could be processed. All tools
+  are now coroutines that offload their work to a worker thread.
+- `freqtrade_search_codebase` no longer aborts when part of the freqtrade tree
+  fails to import. `pkgutil.walk_packages` was called without `onerror`, which
+  makes it re-raise anything that is not an `ImportError`, and `_import_module`
+  itself only caught `ImportError`. Both now handle any exception *and*
+  `SystemExit` — `freqtrade.plot.plotting` calls `exit(1)` at import time when
+  the optional plotly dependency is missing, which a plain `except Exception`
+  does not catch.
+- Startup now verifies that `freqtrade.strategy.interface` actually imports.
+  `check_freqtrade_version` only reads distribution metadata, which stays valid
+  on an incomplete installation, so the server used to start cleanly and then
+  fail on every introspection call instead of failing once with an actionable
+  message.
+- An unknown `FREQTRADE_MCP_LOG_LEVEL` no longer crashes the server at startup.
+  The level was resolved with `getattr(logging, name)`, which happily returns
+  non-level attributes such as `BASIC_FORMAT`; `setLevel` then raised
+  `ValueError`. Levels are now resolved from an explicit allow-list.
+
+### Changed
+
+- `freqtrade_search_codebase` returns a result envelope instead of a bare list:
+  `matches`, `returned`, `total_matches`, `truncated`, `skipped_modules` and
+  `skipped_module_count`. Results are capped by a new `max_results` parameter
+  (1-500, default 50). A `.*` query previously returned ~2500 symbols and over
+  200 KB of JSON in a single response, and silently omitted every module that
+  failed to import. **Breaking change** for anyone consuming the old list shape.
+- Logging setup is idempotent (repeated calls no longer stack handlers) and the
+  `freqtrade_mcp` logger no longer propagates to the root logger, so a root
+  handler attached to stdout cannot corrupt the JSON-RPC stream.
+
+### Added
+
+- `tests/test_integration.py`: smoke tests against a real freqtrade
+  installation, skipped when freqtrade is not importable. The rest of the suite
+  runs on fake modules and is blind to import failures and path layout — this
+  is what surfaced the `SystemExit` bug above. Run with `pytest -m integration`.
+- `anyio` is now an explicit dependency (previously only transitive via `mcp`).
+
+### Removed
+
+- Automatic PyPI publishing in this fork. The `freqtrade-mcp-server` project on
+  PyPI, along with the author and URLs in `pyproject.toml`, belongs to the
+  upstream repository, and trusted publishing is configured there rather than
+  here. The workflow now builds on demand (`workflow_dispatch`) so packaging
+  stays verifiable; changes made here are meant to go upstream as pull requests.
+
 ## [0.1.2] - 2026-07-19
 
 ### Changed

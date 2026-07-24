@@ -1,9 +1,13 @@
 """Tests for the introspection engine."""
 
+import importlib
+import pkgutil
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
 
+from freqtrade_mcp.constants import MAX_SYMBOL_SEARCH_RESULTS
 from freqtrade_mcp.exceptions import (
     ClassNotFoundError,
     IntrospectionError,
@@ -29,7 +33,24 @@ from freqtrade_mcp.models import (
     MethodSignature,
     MethodSummary,
     SymbolMatch,
+    SymbolSearchResult,
 )
+
+
+def _walk_yielding(*module_names: str) -> Callable[..., Iterator[tuple[None, str, bool]]]:
+    """Build a pkgutil.walk_packages stand-in yielding fixed module names.
+
+    The fake freqtrade package has an empty ``__path__``, so the real
+    walk_packages yields nothing and no submodule is ever reached.
+    """
+
+    def _walk(
+        path: Any, prefix: str = "", onerror: Any = None
+    ) -> Iterator[tuple[None, str, bool]]:
+        for name in module_names:
+            yield (None, name, False)
+
+    return _walk
 
 
 class TestListStrategyMethods:
@@ -290,13 +311,130 @@ class TestSearchCodebase:
         """Should find classes matching pattern."""
         # Note: search_codebase walks the package tree, which is limited
         # with fake modules since __path__ is empty. Test with direct module.
-        results = search_codebase("IStrategy")
+        result = search_codebase("IStrategy")
         # May or may not find it depending on fake module setup
-        assert isinstance(results, list)
+        assert isinstance(result, SymbolSearchResult)
 
     def test_search_returns_symbol_matches(self, fake_freqtrade_modules: Any) -> None:
         """Results should be SymbolMatch instances."""
-        results = search_codebase(".*")
-        for r in results:
+        result = search_codebase(".*")
+        for r in result.matches:
             assert isinstance(r, SymbolMatch)
             assert r.kind in {"class", "function", "constant", "enum"}
+
+    def test_reports_truncation(self, fake_freqtrade_modules: Any) -> None:
+        """A capped search must report the full match count and truncation."""
+        full = search_codebase(".*", max_results=MAX_SYMBOL_SEARCH_RESULTS)
+        assert full.truncated is False
+        assert full.returned == full.total_matches
+
+        capped = search_codebase(".*", max_results=1)
+        assert capped.returned == 1
+        assert len(capped.matches) == 1
+        assert capped.total_matches == full.total_matches
+        assert capped.truncated is True
+
+    def test_max_results_is_clamped(self, fake_freqtrade_modules: Any) -> None:
+        """Out-of-range values are clamped rather than trusted blindly."""
+        result = search_codebase(".*", max_results=10_000)
+        assert result.returned <= MAX_SYMBOL_SEARCH_RESULTS
+
+    def test_reports_unimportable_modules(
+        self, fake_freqtrade_modules: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Modules that fail to import must be reported, not dropped silently."""
+        monkeypatch.setattr(pkgutil, "walk_packages", _walk_yielding("freqtrade.broken"))
+        result = search_codebase(".*")
+
+        assert "freqtrade.broken" in result.skipped_modules
+        assert result.skipped_module_count == 1
+        # The rest of the scan still produced results.
+        assert result.total_matches > 0
+
+    def test_non_import_error_does_not_abort_search(
+        self, fake_freqtrade_modules: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-ImportError during a module import must not kill the search.
+
+        _import_module used to catch only ImportError, so anything else raised
+        by a module's top-level code escaped and failed the whole tool call.
+        """
+        real_import = importlib.import_module
+
+        def _flaky_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "freqtrade.exploding":
+                msg = "simulated top-level failure"
+                raise OSError(msg)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(pkgutil, "walk_packages", _walk_yielding("freqtrade.exploding"))
+        monkeypatch.setattr(importlib, "import_module", _flaky_import)
+
+        result = search_codebase(".*")  # must not raise
+        assert isinstance(result, SymbolSearchResult)
+        assert "freqtrade.exploding" in result.skipped_modules
+
+    def test_system_exit_during_import_is_contained(
+        self, fake_freqtrade_modules: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A module calling exit() at import time must not kill the search.
+
+        freqtrade.plot.plotting does exactly this when the optional plotly
+        dependency is missing. SystemExit is a BaseException, so an
+        `except Exception` lets it through and aborts the whole tool call.
+        """
+        real_import = importlib.import_module
+
+        def _exiting_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "freqtrade.plot.plotting":
+                raise SystemExit(1)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(pkgutil, "walk_packages", _walk_yielding("freqtrade.plot.plotting"))
+        monkeypatch.setattr(importlib, "import_module", _exiting_import)
+
+        result = search_codebase(".*")  # must not raise SystemExit
+        assert "freqtrade.plot.plotting" in result.skipped_modules
+
+    def test_system_exit_from_package_walk_is_contained(
+        self, fake_freqtrade_modules: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SystemExit raised by walk_packages itself must degrade gracefully.
+
+        onerror only covers what walk_packages catches internally, and it
+        catches Exception — SystemExit passes straight through the generator.
+        """
+
+        def _walk_then_exit(
+            path: Any, prefix: str = "", onerror: Any = None
+        ) -> Iterator[tuple[None, str, bool]]:
+            yield (None, "freqtrade.enums", False)
+            raise SystemExit(1)
+
+        monkeypatch.setattr(pkgutil, "walk_packages", _walk_then_exit)
+
+        result = search_codebase(".*")  # must not raise SystemExit
+        assert any("walk interrupted" in name for name in result.skipped_modules)
+        assert result.total_matches > 0, "symbols found before the interruption are kept"
+
+    def test_walk_package_errors_are_recorded(
+        self, fake_freqtrade_modules: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """walk_packages must be given an onerror callback.
+
+        Without one it swallows ImportError but re-raises everything else, so a
+        single misbehaving package aborted the whole search.
+        """
+
+        def _walk_with_error(
+            path: Any,
+            prefix: str = "",
+            onerror: Any = None,
+        ) -> Any:
+            assert onerror is not None, "walk_packages called without onerror"
+            onerror("freqtrade.pkgfail")
+            return iter(())
+
+        monkeypatch.setattr(pkgutil, "walk_packages", _walk_with_error)
+        result = search_codebase(".*")
+        assert "freqtrade.pkgfail" in result.skipped_modules

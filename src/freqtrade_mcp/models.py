@@ -2,6 +2,11 @@
 
 from pydantic import BaseModel, Field
 
+from freqtrade_mcp.constants import (
+    DEFAULT_SYMBOL_SEARCH_RESULTS,
+    MAX_SYMBOL_SEARCH_RESULTS,
+)
+
 # --- Input Models ---
 
 
@@ -68,6 +73,12 @@ class SearchCodebaseInput(BaseModel):
             "Supports basic regex (alphanumeric, underscores, wildcards)."
         ),
         max_length=256,
+    )
+    max_results: int = Field(
+        default=DEFAULT_SYMBOL_SEARCH_RESULTS,
+        description="Maximum number of symbols to return (1-500).",
+        ge=1,
+        le=MAX_SYMBOL_SEARCH_RESULTS,
     )
 
 
@@ -230,6 +241,31 @@ class SymbolMatch(BaseModel):
     name: str = Field(description="Symbol name.")
     module: str = Field(description="Module containing the symbol.")
     kind: str = Field(description="Symbol kind: 'class', 'function', 'constant', 'enum'.")
+
+
+class SymbolSearchResult(BaseModel):
+    """Result of a codebase symbol search.
+
+    Completeness is reported explicitly: a caller must be able to tell a
+    genuinely empty result from a truncated one, and a full scan from one where
+    part of the freqtrade tree could not be imported.
+    """
+
+    matches: list[SymbolMatch] = Field(description="Matching symbols (capped at max_results).")
+    returned: int = Field(description="Number of symbols in this response.")
+    total_matches: int = Field(description="Total symbols matched before truncation.")
+    truncated: bool = Field(
+        description="True if more symbols matched than were returned; refine the query."
+    )
+    skipped_modules: list[str] = Field(
+        description=(
+            "Modules that could not be imported and were therefore not searched. "
+            "Results are incomplete when this is non-empty."
+        )
+    )
+    skipped_module_count: int = Field(
+        description="Total number of skipped modules (skipped_modules may be truncated)."
+    )
 
 
 class CallbackInfo(BaseModel):

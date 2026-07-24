@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 import pytest
 
-from freqtrade_mcp._version_check import _parse_version_tuple, check_freqtrade_version
+from freqtrade_mcp._version_check import (
+    _parse_version_tuple,
+    check_freqtrade_importable,
+    check_freqtrade_version,
+)
 from freqtrade_mcp.exceptions import VersionError
 
 
@@ -62,3 +66,40 @@ class TestCheckFreqtradeVersion:
         with patch("freqtrade_mcp._version_check.version", return_value="2026.5"):
             result = check_freqtrade_version()
             assert result == "2026.5"
+
+
+class TestCheckFreqtradeImportable:
+    """Tests for check_freqtrade_importable."""
+
+    def test_passes_when_importable(self) -> None:
+        """Should not raise when the strategy interface imports cleanly."""
+        with patch("freqtrade_mcp._version_check.importlib.import_module") as mock_import:
+            check_freqtrade_importable()
+            mock_import.assert_called_once_with("freqtrade.strategy.interface")
+
+    def test_raises_on_missing_transitive_dependency(self) -> None:
+        """An incomplete install must fail at startup, not on every tool call.
+
+        Distribution metadata stays valid when a transitive dependency is
+        missing, so check_freqtrade_version alone reports success while every
+        introspection call fails later with ModuleImportError.
+        """
+        with (
+            patch(
+                "freqtrade_mcp._version_check.importlib.import_module",
+                side_effect=ModuleNotFoundError("No module named 'scipy'"),
+            ),
+            pytest.raises(VersionError, match="cannot be imported"),
+        ):
+            check_freqtrade_importable()
+
+    def test_raises_on_non_import_error(self) -> None:
+        """Any exception from the import, not just ImportError, must be caught."""
+        with (
+            patch(
+                "freqtrade_mcp._version_check.importlib.import_module",
+                side_effect=RuntimeError("broken top-level code"),
+            ),
+            pytest.raises(VersionError, match="RuntimeError"),
+        ):
+            check_freqtrade_importable()

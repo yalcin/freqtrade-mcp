@@ -1,5 +1,6 @@
 """Constants for freqtrade-mcp."""
 
+import logging
 import re
 from typing import Final
 
@@ -17,6 +18,15 @@ SAFE_REGEX_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.*+?^$|()\
 
 # Maximum length for input strings
 MAX_INPUT_LENGTH: Final[int] = 256
+
+# Symbol search result limits. A broad pattern such as ".*" matches every
+# public symbol in the freqtrade tree (~2500 entries, >200 KB of JSON), which
+# would flood the context window of the calling LLM in a single response.
+DEFAULT_SYMBOL_SEARCH_RESULTS: Final[int] = 50
+MAX_SYMBOL_SEARCH_RESULTS: Final[int] = 500
+
+# Maximum number of skipped module names reported in a search result.
+MAX_REPORTED_SKIPPED_MODULES: Final[int] = 20
 
 # Freqtrade modules allowed for introspection
 ALLOWED_TOP_LEVEL_MODULE: Final[str] = "freqtrade"
@@ -110,6 +120,21 @@ DOCS_UNAVAILABLE_MSG: Final[str] = (
 
 # Environment variable names
 ENV_LOG_LEVEL: Final[str] = "FREQTRADE_MCP_LOG_LEVEL"
+
+# Log levels accepted in FREQTRADE_MCP_LOG_LEVEL. An explicit allow-list is
+# used instead of getattr(logging, name): several module attributes are upper
+# case without being levels (BASIC_FORMAT is a format string), and passing one
+# of those to setLevel() raises ValueError and kills the server at startup.
+LOG_LEVELS: Final[dict[str, int]] = {
+    "CRITICAL": logging.CRITICAL,
+    "FATAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "WARN": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+}
+DEFAULT_LOG_LEVEL: Final[str] = "WARNING"
 
 # Server metadata
 SERVER_NAME: Final[str] = "freqtrade-mcp"

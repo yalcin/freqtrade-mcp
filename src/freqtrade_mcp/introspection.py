@@ -18,7 +18,10 @@ from freqtrade_mcp.constants import (
     ALLOWED_TOP_LEVEL_MODULE,
     CONFIG_SECTIONS,
     DATAFRAME_CONTEXTS,
+    DEFAULT_SYMBOL_SEARCH_RESULTS,
     ISTRATEGY_CLASS_PATH,
+    MAX_REPORTED_SKIPPED_MODULES,
+    MAX_SYMBOL_SEARCH_RESULTS,
     STRATEGY_CALLBACKS,
 )
 from freqtrade_mcp.exceptions import (
@@ -39,6 +42,7 @@ from freqtrade_mcp.models import (
     MethodSummary,
     ParameterInfo,
     SymbolMatch,
+    SymbolSearchResult,
 )
 from freqtrade_mcp.validators import (
     validate_class_path,
@@ -64,8 +68,14 @@ def _import_module(module_path: str) -> ModuleType:
     """
     try:
         return importlib.import_module(module_path)
-    except ImportError as e:
-        msg = f"Cannot import module '{module_path}': {e}"
+    except (Exception, SystemExit) as e:
+        # Deliberately broad: importing a module runs its top-level code, which
+        # can raise anything. SystemExit is included on purpose and is not
+        # theoretical — freqtrade.plot.plotting calls exit(1) at import time
+        # when the optional plotly dependency is missing, and SystemExit is a
+        # BaseException that an `except Exception` would let through.
+        # KeyboardInterrupt is deliberately not caught.
+        msg = f"Cannot import module '{module_path}': {type(e).__name__}: {e}"
         raise ModuleImportError(msg) from e
 
 
@@ -395,19 +405,34 @@ def get_enum_values(enum_path: str) -> EnumDetail:
 
 
 @ttl_cache()
-def search_codebase(query: str) -> list[SymbolMatch]:
+def search_codebase(
+    query: str,
+    max_results: int = DEFAULT_SYMBOL_SEARCH_RESULTS,
+) -> SymbolSearchResult:
     """Search for symbols in the freqtrade codebase by name pattern.
+
+    Walking the freqtrade package imports its modules, so parts of the tree may
+    be unreachable on an incomplete installation. Those modules are reported in
+    ``skipped_modules`` rather than dropped silently, and the match count is
+    reported separately from the (capped) list of returned symbols.
 
     Args:
         query: Validated regex search pattern.
+        max_results: Maximum number of symbols to return.
 
     Returns:
-        List of matching symbols.
+        Search result with matches, truncation state, and skipped modules.
+
+    Raises:
+        ModuleImportError: If the freqtrade package itself cannot be imported.
     """
     pattern = validate_search_pattern(query)
+    capped_results = max(1, min(max_results, MAX_SYMBOL_SEARCH_RESULTS))
+
     matches: list[SymbolMatch] = []
     seen: set[tuple[str, str, str]] = set()
     visited_modules: set[str] = set()
+    skipped: set[str] = set()
 
     def _scan_module(module_path: str) -> None:
         if module_path in visited_modules:
@@ -416,7 +441,9 @@ def search_codebase(query: str) -> list[SymbolMatch]:
 
         try:
             mod = _import_module(module_path)
-        except ModuleImportError:
+        except ModuleImportError as e:
+            logger.debug("Skipping unimportable module %s: %s", module_path, e)
+            skipped.add(module_path)
             return
 
         for name in dir(mod):
@@ -447,24 +474,51 @@ def search_codebase(query: str) -> list[SymbolMatch]:
                 matches.append(SymbolMatch(name=name, module=module_path, kind=kind))
 
     # Walk freqtrade package tree
-    try:
-        ft_module = importlib.import_module(ALLOWED_TOP_LEVEL_MODULE)
-    except ImportError:
-        return matches
+    ft_module = _import_module(ALLOWED_TOP_LEVEL_MODULE)
 
     _scan_module(ALLOWED_TOP_LEVEL_MODULE)
 
     if hasattr(ft_module, "__path__"):
-        for _importer, modname, _ispkg in pkgutil.walk_packages(
-            ft_module.__path__, prefix=f"{ALLOWED_TOP_LEVEL_MODULE}."
-        ):
-            # Limit search depth for performance
-            if modname.count(".") > 4:
-                continue
-            _scan_module(modname)
+        try:
+            # walk_packages() imports every package it traverses. Without
+            # onerror it swallows ImportError but re-raises anything else, so a
+            # single misbehaving submodule would abort the entire search.
+            for _importer, modname, _ispkg in pkgutil.walk_packages(
+                ft_module.__path__,
+                prefix=f"{ALLOWED_TOP_LEVEL_MODULE}.",
+                onerror=skipped.add,
+            ):
+                # Limit search depth for performance. Deeper modules are not
+                # scanned by design, so they are not reported as skipped.
+                if modname.count(".") > 4:
+                    continue
+                _scan_module(modname)
+        except (Exception, SystemExit) as e:
+            # onerror only covers what walk_packages itself catches, and it
+            # catches Exception. A package calling sys.exit() at import time
+            # raises SystemExit straight through the generator. Degrade to a
+            # partial scan and make the gap visible instead of failing.
+            logger.warning("Package walk stopped early: %s: %s", type(e).__name__, e)
+            skipped.add(f"<package walk interrupted: {type(e).__name__}>")
 
     matches.sort(key=lambda m: (m.name, m.module))
-    return matches
+    returned = matches[:capped_results]
+    skipped_sorted = sorted(skipped)
+
+    if skipped_sorted:
+        logger.warning(
+            "Symbol search results are incomplete: %d module(s) could not be imported.",
+            len(skipped_sorted),
+        )
+
+    return SymbolSearchResult(
+        matches=returned,
+        returned=len(returned),
+        total_matches=len(matches),
+        truncated=len(matches) > len(returned),
+        skipped_modules=skipped_sorted[:MAX_REPORTED_SKIPPED_MODULES],
+        skipped_module_count=len(skipped_sorted),
+    )
 
 
 def get_callback_info(callback_name: str) -> CallbackInfo:

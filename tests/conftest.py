@@ -139,12 +139,26 @@ class FakeIStrategy:
         """Private method that should not appear in public API."""
 
 
+def _fake_helper() -> None:
+    """Public function re-exported by the fake root module."""
+
+
 def _create_fake_freqtrade_module() -> types.ModuleType:
     """Create a fake freqtrade module hierarchy for testing."""
     # Root module
     ft = types.ModuleType("freqtrade")
     ft.__version__ = "2026.3"  # type: ignore[attr-defined]
     ft.__path__ = []  # type: ignore[attr-defined]
+
+    # Public symbols on the root module. search_codebase discovers submodules
+    # through pkgutil.walk_packages, which yields nothing for a synthetic
+    # module with an empty __path__ — so anything the symbol search should find
+    # has to live on the root module itself.
+    ft.IStrategy = FakeIStrategy  # type: ignore[attr-defined]
+    ft.SignalDirection = FakeSignalDirection  # type: ignore[attr-defined]
+    ft.TradeExitType = FakeTradeExitType  # type: ignore[attr-defined]
+    ft.fake_helper = _fake_helper  # type: ignore[attr-defined]
+    ft.DEFAULT_TIMEFRAME = "5m"  # type: ignore[attr-defined]
 
     # Strategy module
     ft_strategy = types.ModuleType("freqtrade.strategy")

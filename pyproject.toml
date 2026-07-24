@@ -23,6 +23,7 @@ classifiers = [
 dependencies = [
     "mcp[cli]>=1.26.0",
     "freqtrade>=2026.2",
+    "anyio>=4.5",
 ]
 
 [project.optional-dependencies]
@@ -90,3 +91,6 @@ warn_unused_configs = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--cov=freqtrade_mcp --cov-report=term-missing --cov-report=html"
+markers = [
+    "integration: exercises a real, importable freqtrade installation (skipped otherwise)",
+]

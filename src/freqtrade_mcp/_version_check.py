@@ -1,9 +1,10 @@
 """Startup validation of the installed freqtrade version."""
 
+import importlib
 import logging
 from importlib.metadata import PackageNotFoundError, version
 
-from freqtrade_mcp.constants import MIN_FREQTRADE_VERSION
+from freqtrade_mcp.constants import ISTRATEGY_CLASS_PATH, MIN_FREQTRADE_VERSION
 from freqtrade_mcp.exceptions import VersionError
 
 logger = logging.getLogger(__name__)
@@ -63,3 +64,30 @@ def check_freqtrade_version() -> str:
 
     logger.info("freqtrade %s detected (minimum: %s)", installed_version, MIN_FREQTRADE_VERSION)
     return installed_version
+
+
+def check_freqtrade_importable() -> None:
+    """Verify that the freqtrade strategy interface can actually be imported.
+
+    ``check_freqtrade_version`` only reads distribution metadata, which stays
+    valid even when the installation is unusable — a missing transitive
+    dependency, for instance. Without this check the server starts cleanly and
+    then fails on every introspection call instead of failing once, loudly, at
+    startup.
+
+    Raises:
+        VersionError: If the freqtrade strategy interface cannot be imported.
+    """
+    module_path = ISTRATEGY_CLASS_PATH.rsplit(".", maxsplit=1)[0]
+    try:
+        importlib.import_module(module_path)
+    except Exception as exc:
+        msg = (
+            f"freqtrade is installed but '{module_path}' cannot be imported "
+            f"({type(exc).__name__}: {exc}). The freqtrade installation looks "
+            "incomplete — reinstall it in the same environment as freqtrade-mcp, "
+            "e.g. 'pip install --force-reinstall freqtrade'."
+        )
+        raise VersionError(msg) from exc
+
+    logger.info("freqtrade strategy interface imported successfully")

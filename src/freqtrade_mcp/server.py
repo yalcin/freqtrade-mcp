@@ -10,18 +10,25 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Callable
+from functools import partial
 from typing import Annotated, Any
 
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 import freqtrade_mcp
-from freqtrade_mcp._version_check import check_freqtrade_version
+from freqtrade_mcp._version_check import check_freqtrade_importable, check_freqtrade_version
 from freqtrade_mcp.constants import (
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_SYMBOL_SEARCH_RESULTS,
     DOCS_UNAVAILABLE_MSG,
     ENV_DOCS_PATH,
     ENV_LOG_LEVEL,
+    LOG_LEVELS,
+    MAX_SYMBOL_SEARCH_RESULTS,
     SERVER_DESCRIPTION,
     SERVER_NAME,
 )
@@ -66,11 +73,30 @@ _TOOL_ANNOTATIONS = ToolAnnotations(
 mcp = FastMCP(SERVER_NAME, instructions=SERVER_DESCRIPTION)
 
 
+async def _run_sync[T](func: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
+    """Run a blocking introspection helper in a worker thread.
+
+    FastMCP invokes synchronous tool functions inline on the event loop, so any
+    blocking work stalls the entire server: no concurrent tool calls, no
+    keepalive, no cancellation. Importing the freqtrade package tree alone
+    takes seconds on the first symbol search, so every tool body is offloaded.
+
+    Args:
+        func: Blocking callable to execute.
+        *args: Positional arguments for ``func``.
+        **kwargs: Keyword arguments for ``func``.
+
+    Returns:
+        Whatever ``func`` returns.
+    """
+    return await anyio.to_thread.run_sync(partial(func, *args, **kwargs))
+
+
 # --- Tool Definitions ---
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_list_strategy_methods(
+async def freqtrade_list_strategy_methods(
     filter: Annotated[  # noqa: A002
         str | None,
         Field(
@@ -95,12 +121,12 @@ def freqtrade_list_strategy_methods(
         List of method summaries with name, brief description, and callback flag.
     """
     input_model = ListStrategyMethodsInput(filter=filter)
-    methods = list_strategy_methods(filter_str=input_model.filter)
+    methods = await _run_sync(list_strategy_methods, filter_str=input_model.filter)
     return [m.model_dump() for m in methods]
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_method_signature(
+async def freqtrade_get_method_signature(
     method_name: Annotated[
         str,
         Field(description="Name of the IStrategy method to inspect.", max_length=256),
@@ -118,12 +144,12 @@ def freqtrade_get_method_signature(
         Method signature details including parameters, return type, and docstring.
     """
     input_model = GetMethodSignatureInput(method_name=method_name)
-    result = get_method_signature(input_model.method_name)
+    result = await _run_sync(get_method_signature, input_model.method_name)
     return result.model_dump()
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_class_info(
+async def freqtrade_get_class_info(
     class_path: Annotated[
         str,
         Field(
@@ -147,12 +173,12 @@ def freqtrade_get_class_info(
         Class introspection result with docstring, MRO, methods, and attributes.
     """
     input_model = GetClassInfoInput(class_path=class_path)
-    result = get_class_info(input_model.class_path)
+    result = await _run_sync(get_class_info, input_model.class_path)
     return result.model_dump()
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_list_enums(
+async def freqtrade_list_enums(
     filter: Annotated[  # noqa: A002
         str | None,
         Field(description="Optional filter pattern to narrow enum results.", max_length=256),
@@ -170,12 +196,12 @@ def freqtrade_list_enums(
         List of enum summaries.
     """
     input_model = ListEnumsInput(filter=filter)
-    enums = list_enums(filter_str=input_model.filter)
+    enums = await _run_sync(list_enums, filter_str=input_model.filter)
     return [e.model_dump() for e in enums]
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_enum_values(
+async def freqtrade_get_enum_values(
     enum_path: Annotated[
         str,
         Field(
@@ -198,12 +224,12 @@ def freqtrade_get_enum_values(
         Enum details including all member names and values.
     """
     input_model = GetEnumValuesInput(enum_path=enum_path)
-    result = get_enum_values(input_model.enum_path)
+    result = await _run_sync(get_enum_values, input_model.enum_path)
     return result.model_dump()
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_search_codebase(
+async def freqtrade_search_codebase(
     query: Annotated[
         str,
         Field(
@@ -214,26 +240,45 @@ def freqtrade_search_codebase(
             max_length=256,
         ),
     ],
-) -> list[dict[str, Any]]:
+    max_results: Annotated[
+        int,
+        Field(
+            description="Maximum number of symbols to return (1-500).",
+            ge=1,
+            le=MAX_SYMBOL_SEARCH_RESULTS,
+        ),
+    ] = DEFAULT_SYMBOL_SEARCH_RESULTS,
+) -> dict[str, Any]:
     """Search for symbols in the freqtrade codebase by name pattern.
 
     Searches for classes, functions, constants, and enums matching the given
     pattern. Supports basic regex patterns using alphanumeric characters,
     underscores, and standard regex operators.
 
+    The response reports completeness explicitly. Check ``truncated`` before
+    concluding that a symbol does not exist: a broad pattern such as ".*"
+    matches thousands of symbols and only the first ``max_results`` are
+    returned. Check ``skipped_modules`` too — a non-empty list means part of
+    the freqtrade tree could not be imported and was never searched.
+
     Args:
         query: Search pattern for symbol names. Supports basic regex.
+        max_results: Maximum number of symbols to return (1-500, default 50).
 
     Returns:
-        List of matching symbols with their module paths and kinds.
+        Search result with matches, total_matches, truncated, and skipped_modules.
     """
-    input_model = SearchCodebaseInput(query=query)
-    matches = search_codebase(input_model.query)
-    return [m.model_dump() for m in matches]
+    input_model = SearchCodebaseInput(query=query, max_results=max_results)
+    result = await _run_sync(
+        search_codebase,
+        input_model.query,
+        max_results=input_model.max_results,
+    )
+    return result.model_dump()
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_callback_info(
+async def freqtrade_get_callback_info(
     callback_name: Annotated[
         str,
         Field(
@@ -258,12 +303,12 @@ def freqtrade_get_callback_info(
         Detailed callback information including signature and docstring.
     """
     input_model = GetCallbackInfoInput(callback_name=callback_name)
-    result = get_callback_info(input_model.callback_name)
+    result = await _run_sync(get_callback_info, input_model.callback_name)
     return result.model_dump()
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_config_schema(
+async def freqtrade_get_config_schema(
     section: Annotated[
         str | None,
         Field(
@@ -287,12 +332,12 @@ def freqtrade_get_config_schema(
         List of config key entries with descriptions.
     """
     input_model = GetConfigSchemaInput(section=section)
-    keys = get_config_schema(section=input_model.section)
+    keys = await _run_sync(get_config_schema, section=input_model.section)
     return [k.model_dump() for k in keys]
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_dataframe_columns(
+async def freqtrade_get_dataframe_columns(
     context: Annotated[
         str | None,
         Field(
@@ -320,12 +365,12 @@ def freqtrade_get_dataframe_columns(
         List of DataFrame column entries with descriptions and contexts.
     """
     input_model = GetDataframeColumnsInput(context=context)
-    columns = get_dataframe_columns(context=input_model.context)
+    columns = await _run_sync(get_dataframe_columns, context=input_model.context)
     return [c.model_dump() for c in columns]
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_version_info() -> dict[str, str]:
+async def freqtrade_get_version_info() -> dict[str, str]:
     """Return installed freqtrade version and MCP server version.
 
     Returns version information including the freqtrade-mcp server version,
@@ -334,7 +379,7 @@ def freqtrade_get_version_info() -> dict[str, str]:
     Returns:
         Version information dictionary.
     """
-    ft_version = check_freqtrade_version()
+    ft_version = await _run_sync(check_freqtrade_version)
     return {
         "mcp_server_version": freqtrade_mcp.__version__,
         "freqtrade_version": ft_version,
@@ -346,7 +391,7 @@ def freqtrade_get_version_info() -> dict[str, str]:
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_list_docs(
+async def freqtrade_list_docs(
     filter: Annotated[  # noqa: A002
         str | None,
         Field(
@@ -370,14 +415,14 @@ def freqtrade_list_docs(
         List of doc topic summaries, or an error message if docs not available.
     """
     input_model = ListDocsInput(filter=filter)
-    result = list_docs(filter_str=input_model.filter)
+    result = await _run_sync(list_docs, filter_str=input_model.filter)
     if result is None:
         return {"error": DOCS_UNAVAILABLE_MSG}
     return [t.model_dump() for t in result]
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_search_docs(
+async def freqtrade_search_docs(
     query: Annotated[
         str,
         Field(
@@ -406,14 +451,16 @@ def freqtrade_search_docs(
         List of search results with snippets, or error if docs not available.
     """
     input_model = SearchDocsInput(query=query, max_results=max_results)
-    result = search_docs(query=input_model.query, max_results=input_model.max_results)
+    result = await _run_sync(
+        search_docs, query=input_model.query, max_results=input_model.max_results
+    )
     if result is None:
         return {"error": DOCS_UNAVAILABLE_MSG}
     return [r.model_dump() for r in result]
 
 
 @mcp.tool(annotations=_TOOL_ANNOTATIONS)
-def freqtrade_get_doc(
+async def freqtrade_get_doc(
     topic: Annotated[
         str,
         Field(
@@ -438,7 +485,7 @@ def freqtrade_get_doc(
         Full document content with title and metadata, or error if not available.
     """
     input_model = GetDocInput(topic=topic)
-    result = get_doc(topic=input_model.topic)
+    result = await _run_sync(get_doc, topic=input_model.topic)
     if result is None:
         return {"error": DOCS_UNAVAILABLE_MSG}
     return result.model_dump()
@@ -459,13 +506,34 @@ class _JsonFormatter(logging.Formatter):
 
 
 def _configure_logging() -> None:
-    """Configure logging to stderr with JSON structured output."""
-    log_level = os.environ.get(ENV_LOG_LEVEL, "WARNING").upper()
+    """Configure logging to stderr with JSON structured output.
+
+    Safe to call more than once: existing handlers are replaced rather than
+    stacked. An unknown log level falls back to WARNING with a warning instead
+    of raising, and propagation to the root logger is disabled so that a root
+    handler writing to stdout can never corrupt the JSON-RPC stream.
+    """
+    requested = os.environ.get(ENV_LOG_LEVEL, DEFAULT_LOG_LEVEL).strip().upper()
+    level = LOG_LEVELS.get(requested)
+
+    pkg_logger = logging.getLogger("freqtrade_mcp")
+    pkg_logger.propagate = False
+    for existing in list(pkg_logger.handlers):
+        pkg_logger.removeHandler(existing)
+
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(_JsonFormatter())
-    root_logger = logging.getLogger("freqtrade_mcp")
-    root_logger.setLevel(getattr(logging, log_level, logging.WARNING))
-    root_logger.addHandler(handler)
+    pkg_logger.addHandler(handler)
+    pkg_logger.setLevel(level if level is not None else LOG_LEVELS[DEFAULT_LOG_LEVEL])
+
+    if level is None:
+        pkg_logger.warning(
+            "Unknown %s=%r; falling back to %s. Valid levels: %s.",
+            ENV_LOG_LEVEL,
+            requested,
+            DEFAULT_LOG_LEVEL,
+            ", ".join(sorted(LOG_LEVELS)),
+        )
 
 
 def main() -> None:
@@ -476,9 +544,13 @@ def main() -> None:
     """
     _configure_logging()
 
-    # Validate freqtrade is available before starting
+    # Validate freqtrade is available before starting. Both checks are fatal:
+    # metadata alone does not prove the package is usable, and a server whose
+    # introspection tools all fail at call time is worse than one that refuses
+    # to start with an actionable message.
     try:
         ft_version = check_freqtrade_version()
+        check_freqtrade_importable()
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
