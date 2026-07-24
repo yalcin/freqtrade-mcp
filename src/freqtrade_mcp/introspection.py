@@ -9,13 +9,12 @@ import enum
 import importlib
 import inspect
 import logging
-import pkgutil
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 from freqtrade_mcp.cache import ttl_cache
 from freqtrade_mcp.constants import (
-    ALLOWED_TOP_LEVEL_MODULE,
     CONFIG_SECTIONS,
     DATAFRAME_CONTEXTS,
     DEFAULT_SYMBOL_SEARCH_RESULTS,
@@ -41,9 +40,9 @@ from freqtrade_mcp.models import (
     MethodSignature,
     MethodSummary,
     ParameterInfo,
-    SymbolMatch,
     SymbolSearchResult,
 )
+from freqtrade_mcp.symbols import _freqtrade_package_root, build_symbol_index
 from freqtrade_mcp.validators import (
     validate_class_path,
     validate_filter_string,
@@ -183,11 +182,17 @@ def _get_source_file(obj: Any) -> str | None:
         return None
 
     # Make it relative if possible
-    ft_marker = f"/{ALLOWED_TOP_LEVEL_MODULE}/"
-    idx = source_file.find(ft_marker)
-    if idx != -1:
-        return source_file[idx + 1 :]
-    return source_file
+    # Anchor on the real package directory. Searching for the first
+    # "/freqtrade/" in the absolute path breaks whenever an ancestor directory
+    # is named freqtrade — the layout freqtrade's own docs and Docker image
+    # use — and would report e.g. "freqtrade/.venv/lib/.../interface.py".
+    try:
+        package_root = _freqtrade_package_root().parent
+        return str(Path(source_file).relative_to(package_root))
+    except (ModuleImportError, ValueError):
+        # Outside the freqtrade package: return the bare filename rather than
+        # leaking an absolute filesystem path.
+        return Path(source_file).name
 
 
 # --- Public API ---
@@ -411,8 +416,9 @@ def search_codebase(
 ) -> SymbolSearchResult:
     """Search for symbols in the freqtrade codebase by name pattern.
 
-    Walking the freqtrade package imports its modules, so parts of the tree may
-    be unreachable on an incomplete installation. Those modules are reported in
+    Searches a statically built index (see :mod:`freqtrade_mcp.symbols`), so no
+    freqtrade module is imported and no optional dependency can break the scan.
+    Modules whose source could not be parsed are reported in
     ``skipped_modules`` rather than dropped silently, and the match count is
     reported separately from the (capped) list of returned symbols.
 
@@ -424,91 +430,19 @@ def search_codebase(
         Search result with matches, truncation state, and skipped modules.
 
     Raises:
-        ModuleImportError: If the freqtrade package itself cannot be imported.
+        ModuleImportError: If the freqtrade package cannot be located.
     """
     pattern = validate_search_pattern(query)
     capped_results = max(1, min(max_results, MAX_SYMBOL_SEARCH_RESULTS))
 
-    matches: list[SymbolMatch] = []
-    seen: set[tuple[str, str, str]] = set()
-    visited_modules: set[str] = set()
-    skipped: set[str] = set()
-
-    def _scan_module(module_path: str) -> None:
-        if module_path in visited_modules:
-            return
-        visited_modules.add(module_path)
-
-        try:
-            mod = _import_module(module_path)
-        except ModuleImportError as e:
-            logger.debug("Skipping unimportable module %s: %s", module_path, e)
-            skipped.add(module_path)
-            return
-
-        for name in dir(mod):
-            if name.startswith("_"):
-                continue
-            if not pattern.search(name):
-                continue
-
-            obj = getattr(mod, name, None)
-            if obj is None:
-                continue
-
-            # Determine kind
-            if isinstance(obj, type):
-                if issubclass(obj, enum.Enum) and obj is not enum.Enum:
-                    kind = "enum"
-                else:
-                    kind = "class"
-            elif callable(obj):
-                kind = "function"
-            else:
-                kind = "constant"
-
-            # Avoid duplicates from re-exports
-            key = (name, module_path, kind)
-            if key not in seen:
-                seen.add(key)
-                matches.append(SymbolMatch(name=name, module=module_path, kind=kind))
-
-    # Walk freqtrade package tree
-    ft_module = _import_module(ALLOWED_TOP_LEVEL_MODULE)
-
-    _scan_module(ALLOWED_TOP_LEVEL_MODULE)
-
-    if hasattr(ft_module, "__path__"):
-        try:
-            # walk_packages() imports every package it traverses. Without
-            # onerror it swallows ImportError but re-raises anything else, so a
-            # single misbehaving submodule would abort the entire search.
-            for _importer, modname, _ispkg in pkgutil.walk_packages(
-                ft_module.__path__,
-                prefix=f"{ALLOWED_TOP_LEVEL_MODULE}.",
-                onerror=skipped.add,
-            ):
-                # Limit search depth for performance. Deeper modules are not
-                # scanned by design, so they are not reported as skipped.
-                if modname.count(".") > 4:
-                    continue
-                _scan_module(modname)
-        except (Exception, SystemExit) as e:
-            # onerror only covers what walk_packages itself catches, and it
-            # catches Exception. A package calling sys.exit() at import time
-            # raises SystemExit straight through the generator. Degrade to a
-            # partial scan and make the gap visible instead of failing.
-            logger.warning("Package walk stopped early: %s: %s", type(e).__name__, e)
-            skipped.add(f"<package walk interrupted: {type(e).__name__}>")
-
-    matches.sort(key=lambda m: (m.name, m.module))
+    index = build_symbol_index()
+    matches = [symbol for symbol in index.symbols if pattern.search(symbol.name)]
     returned = matches[:capped_results]
-    skipped_sorted = sorted(skipped)
 
-    if skipped_sorted:
+    if index.unreadable_modules:
         logger.warning(
-            "Symbol search results are incomplete: %d module(s) could not be imported.",
-            len(skipped_sorted),
+            "Symbol search results are incomplete: %d module(s) could not be parsed.",
+            len(index.unreadable_modules),
         )
 
     return SymbolSearchResult(
@@ -516,8 +450,8 @@ def search_codebase(
         returned=len(returned),
         total_matches=len(matches),
         truncated=len(matches) > len(returned),
-        skipped_modules=skipped_sorted[:MAX_REPORTED_SKIPPED_MODULES],
-        skipped_module_count=len(skipped_sorted),
+        skipped_modules=index.unreadable_modules[:MAX_REPORTED_SKIPPED_MODULES],
+        skipped_module_count=len(index.unreadable_modules),
     )
 
 

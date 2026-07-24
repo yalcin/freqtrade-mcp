@@ -22,12 +22,14 @@ from pydantic import Field
 import freqtrade_mcp
 from freqtrade_mcp._version_check import check_freqtrade_importable, check_freqtrade_version
 from freqtrade_mcp.constants import (
+    DEFAULT_DOC_MAX_CHARS,
     DEFAULT_LOG_LEVEL,
     DEFAULT_SYMBOL_SEARCH_RESULTS,
     DOCS_UNAVAILABLE_MSG,
     ENV_DOCS_PATH,
     ENV_LOG_LEVEL,
     LOG_LEVELS,
+    MAX_DOC_MAX_CHARS,
     MAX_SYMBOL_SEARCH_RESULTS,
     SERVER_DESCRIPTION,
     SERVER_NAME,
@@ -471,21 +473,57 @@ async def freqtrade_get_doc(
             max_length=256,
         ),
     ],
+    section: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional section heading to return instead of the whole page. "
+                "Matched case-insensitively against the page's '##' headings, which "
+                "are always listed in the 'sections' field of the response."
+            ),
+            max_length=256,
+        ),
+    ] = None,
+    offset: Annotated[
+        int,
+        Field(description="Character offset to resume reading from (see next_offset).", ge=0),
+    ] = 0,
+    max_chars: Annotated[
+        int,
+        Field(
+            description="Maximum number of characters to return (1-100000).",
+            ge=1,
+            le=MAX_DOC_MAX_CHARS,
+        ),
+    ] = DEFAULT_DOC_MAX_CHARS,
 ) -> dict[str, Any] | dict[str, str]:
-    """Read a specific freqtrade documentation page.
+    """Read a freqtrade documentation page, or one section of it.
 
-    Returns the full markdown content of a documentation page by topic name.
-    Use freqtrade_list_docs to discover available topic names.
+    Pages are returned in slices — freqtrade's largest page is ~70 KB, roughly
+    17k tokens in a single response. The response always lists the page's '##'
+    headings in ``sections``: pass one back as ``section`` to read just that
+    part. To read a long page in full, follow ``next_offset`` until
+    ``truncated`` is false.
 
     Args:
         topic: Topic name (e.g., "strategy-callbacks", "configuration",
             "commands/backtesting").
+        section: Optional section heading to return instead of the whole page.
+        offset: Character offset to resume reading from.
+        max_chars: Maximum characters to return (1-100000, default 20000).
 
     Returns:
-        Full document content with title and metadata, or error if not available.
+        Document slice with sections, pagination state, and metadata, or an
+        error if documentation is not available.
     """
-    input_model = GetDocInput(topic=topic)
-    result = await _run_sync(get_doc, topic=input_model.topic)
+    input_model = GetDocInput(topic=topic, section=section, offset=offset, max_chars=max_chars)
+    result = await _run_sync(
+        get_doc,
+        topic=input_model.topic,
+        section=input_model.section,
+        offset=input_model.offset,
+        max_chars=input_model.max_chars,
+    )
     if result is None:
         return {"error": DOCS_UNAVAILABLE_MSG}
     return result.model_dump()

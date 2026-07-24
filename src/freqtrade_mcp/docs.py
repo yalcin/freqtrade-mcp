@@ -10,14 +10,18 @@ from pathlib import Path
 
 from freqtrade_mcp.cache import ttl_cache
 from freqtrade_mcp.constants import (
+    DEFAULT_DOC_MAX_CHARS,
     DOC_SEARCH_CONTEXT_LINES,
+    DOC_SECTION_PREFIX,
     ENV_DOCS_PATH,
+    MAX_DOC_MAX_CHARS,
     MAX_DOC_SEARCH_RESULTS,
 )
-from freqtrade_mcp.exceptions import DocTopicNotFoundError
+from freqtrade_mcp.exceptions import DocSectionNotFoundError, DocTopicNotFoundError
 from freqtrade_mcp.models import DocContent, DocSearchResult, DocTopic
 from freqtrade_mcp.validators import (
     validate_doc_search_query,
+    validate_doc_section,
     validate_doc_topic,
     validate_filter_string,
 )
@@ -268,19 +272,106 @@ def search_docs(
     return results
 
 
-def get_doc(topic: str) -> DocContent | None:
-    """Get full content of a documentation page.
+def _list_sections(content: str) -> list[str]:
+    """Collect the level-2 headings of a markdown document.
+
+    Args:
+        content: Full markdown content.
+
+    Returns:
+        Section titles in document order.
+    """
+    sections: list[str] = []
+    for line in content.splitlines():
+        if line.startswith(DOC_SECTION_PREFIX) and not line.startswith("###"):
+            title = line[len(DOC_SECTION_PREFIX) :].strip()
+            if title:
+                sections.append(title)
+    return sections
+
+
+def _extract_section(content: str, section: str) -> str | None:
+    """Extract one level-2 section, heading included.
+
+    The section runs from its own heading up to the next level-1 or level-2
+    heading, so nested '###' subsections stay with their parent.
+
+    Args:
+        content: Full markdown content.
+        section: Section title to extract, matched case-insensitively.
+
+    Returns:
+        The section text, or None if no heading matches.
+    """
+    wanted = section.strip().lower()
+    lines = content.splitlines()
+    start: int | None = None
+
+    for i, line in enumerate(lines):
+        is_section_heading = line.startswith(DOC_SECTION_PREFIX) and not line.startswith("###")
+        if start is None:
+            if is_section_heading and line[len(DOC_SECTION_PREFIX) :].strip().lower() == wanted:
+                start = i
+        elif is_section_heading or (line.startswith("# ") and not line.startswith("##")):
+            return "\n".join(lines[start:i]).rstrip()
+
+    if start is None:
+        return None
+    return "\n".join(lines[start:]).rstrip()
+
+
+def _slice_content(content: str, offset: int, max_chars: int) -> tuple[str, bool]:
+    """Take a slice of content, preferring to end on a line boundary.
+
+    Args:
+        content: Text to slice.
+        offset: Starting character offset.
+        max_chars: Maximum characters to return.
+
+    Returns:
+        Tuple of (slice, more_remaining).
+    """
+    if offset >= len(content):
+        return "", False
+
+    chunk = content[offset : offset + max_chars]
+    more = offset + len(chunk) < len(content)
+
+    if more:
+        # Avoid cutting mid-line; keep the whole chunk if there is no newline
+        # to fall back to.
+        newline = chunk.rfind("\n")
+        if newline > 0:
+            chunk = chunk[:newline]
+
+    return chunk, offset + len(chunk) < len(content)
+
+
+def get_doc(
+    topic: str,
+    section: str | None = None,
+    offset: int = 0,
+    max_chars: int = DEFAULT_DOC_MAX_CHARS,
+) -> DocContent | None:
+    """Get a slice of a documentation page.
 
     Args:
         topic: Topic name to retrieve.
+        section: Optional level-2 heading to return instead of the whole page.
+        offset: Character offset to start reading from.
+        max_chars: Maximum characters to return.
 
     Returns:
-        DocContent with full markdown, or None if docs unavailable.
+        DocContent for the requested slice, or None if docs unavailable.
 
     Raises:
         DocTopicNotFoundError: If the topic does not exist.
+        DocSectionNotFoundError: If the requested section does not exist.
     """
     validated_topic = validate_doc_topic(topic)
+    validated_section = validate_doc_section(section) if section else None
+    capped_chars = max(1, min(max_chars, MAX_DOC_MAX_CHARS))
+    start = max(0, offset)
 
     index = _load_docs_index()
     if index is None:
@@ -298,9 +389,31 @@ def get_doc(topic: str) -> DocContent | None:
         raise DocTopicNotFoundError(msg)
 
     title, content, size = entry
+    sections = _list_sections(content)
+
+    scope = content
+    if validated_section is not None:
+        extracted = _extract_section(content, validated_section)
+        if extracted is None:
+            msg = (
+                f"Section '{validated_section}' not found in '{validated_topic}'. "
+                f"Available sections: {', '.join(sections) if sections else '(none)'}."
+            )
+            raise DocSectionNotFoundError(msg)
+        scope = extracted
+
+    chunk, more = _slice_content(scope, start, capped_chars)
+
     return DocContent(
         topic=validated_topic,
         title=title,
-        content=content,
+        content=chunk,
         size_bytes=size,
+        section=validated_section,
+        sections=sections,
+        offset=start,
+        returned_chars=len(chunk),
+        total_chars=len(scope),
+        truncated=more,
+        next_offset=start + len(chunk) if more else None,
     )

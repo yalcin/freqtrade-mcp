@@ -4,33 +4,31 @@ import importlib
 import logging
 from importlib.metadata import PackageNotFoundError, version
 
+from packaging.version import InvalidVersion, Version
+
 from freqtrade_mcp.constants import ISTRATEGY_CLASS_PATH, MIN_FREQTRADE_VERSION
 from freqtrade_mcp.exceptions import VersionError
 
 logger = logging.getLogger(__name__)
 
 
-def _parse_version_tuple(version_str: str) -> tuple[int, ...]:
-    """Parse a version string into a comparable tuple of integers.
+def _parse_version(version_str: str) -> Version | None:
+    """Parse a version string using PEP 440 semantics.
+
+    Replaces a hand-rolled numeric-prefix parser that mapped "2026.2rc1" onto
+    (2026, 2) — making a release candidate compare equal to the final release
+    — and silently dropped anything it did not understand.
 
     Args:
-        version_str: Version string like "2026.2" or "2026.2.1".
+        version_str: Version string such as "2026.6" or "2026.7.dev0".
 
     Returns:
-        Tuple of integers for comparison.
+        The parsed version, or None if it is not PEP 440 compliant.
     """
-    parts: list[int] = []
-    for part in version_str.split("."):
-        # Strip any pre-release suffixes (e.g., "2026.2rc1" -> "2026")
-        numeric = ""
-        for char in part:
-            if char.isdigit():
-                numeric += char
-            else:
-                break
-        if numeric:
-            parts.append(int(numeric))
-    return tuple(parts)
+    try:
+        return Version(version_str)
+    except InvalidVersion:
+        return None
 
 
 def check_freqtrade_version() -> str:
@@ -51,10 +49,17 @@ def check_freqtrade_version() -> str:
         )
         raise VersionError(msg) from exc
 
-    installed_tuple = _parse_version_tuple(installed_version)
-    required_tuple = _parse_version_tuple(MIN_FREQTRADE_VERSION)
+    installed = _parse_version(installed_version)
+    if installed is None:
+        # An unparseable version is not grounds for refusing to start: it is
+        # usually a local or vendored build. Warn and continue.
+        logger.warning(
+            "Cannot parse freqtrade version %r; skipping the minimum version check.",
+            installed_version,
+        )
+        return installed_version
 
-    if installed_tuple < required_tuple:
+    if installed < Version(MIN_FREQTRADE_VERSION):
         msg = (
             f"freqtrade {installed_version} is installed, "
             f"but freqtrade-mcp requires >= {MIN_FREQTRADE_VERSION}. "

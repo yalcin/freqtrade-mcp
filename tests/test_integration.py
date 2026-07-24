@@ -8,6 +8,8 @@ tests fill that gap and are skipped when freqtrade is not importable.
 Run them explicitly with:  pytest -m integration
 """
 
+import sys
+
 import pytest
 
 from freqtrade_mcp.constants import ISTRATEGY_CLASS_PATH, MAX_SYMBOL_SEARCH_RESULTS
@@ -19,6 +21,7 @@ from freqtrade_mcp.introspection import (
     search_codebase,
 )
 from freqtrade_mcp.models import SymbolSearchResult
+from freqtrade_mcp.symbols import build_symbol_index
 
 pytestmark = pytest.mark.integration
 
@@ -103,3 +106,36 @@ class TestRealSymbolSearch:
         result = search_codebase("Trade", max_results=20)
         assert result.skipped_module_count == 0 or result.skipped_modules
         assert result.skipped_module_count >= len(result.skipped_modules)
+
+    def test_search_imports_no_freqtrade_module(self) -> None:
+        """Searching the real tree must not import any freqtrade module.
+
+        The previous implementation walked and imported the package, pulling
+        ccxt, pandas and sqlalchemy into the server process and executing
+        third-party top-level code on the way.
+        """
+        before = {name for name in sys.modules if name.startswith("freqtrade.")}
+        search_codebase("Exchange", max_results=5)
+        after = {name for name in sys.modules if name.startswith("freqtrade.")}
+        assert after == before
+
+    def test_optional_dependencies_do_not_break_the_scan(self) -> None:
+        """Modules guarded by optional dependencies must still be indexed.
+
+        freqtrade.plot.plotting calls exit(1) at import time when plotly is
+        absent, which used to abort the whole search.
+        """
+        index = build_symbol_index()
+        modules = {symbol.module for symbol in index.symbols}
+        assert "freqtrade.plot.plotting" in modules
+
+    def test_public_reexports_are_discoverable(self) -> None:
+        """The documented import path should be findable too.
+
+        Strategy code says `from freqtrade.strategy import IStrategy`, not the
+        definition site `freqtrade.strategy.interface`.
+        """
+        result = search_codebase("IStrategy", max_results=MAX_SYMBOL_SEARCH_RESULTS)
+        modules = {m.module for m in result.matches if m.name == "IStrategy"}
+        assert "freqtrade.strategy" in modules
+        assert "freqtrade.strategy.interface" in modules

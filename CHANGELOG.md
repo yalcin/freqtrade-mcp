@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (symbol search and documentation)
+
+- `freqtrade_search_codebase` now searches a **static index built with `ast`**
+  instead of importing the freqtrade package tree. Against freqtrade 2026.6 the
+  first search went from ~2s warm (9-21s cold) to **0.37s**, imports **zero**
+  freqtrade modules (previously ~250, pulling in ccxt, pandas and sqlalchemy),
+  and reports **zero** skipped modules where the import-based scan silently lost
+  36 of them to missing optional dependencies. Symbols re-exported from a
+  package `__init__` are indexed too, so the documented import path
+  (`freqtrade.strategy.IStrategy`) is discoverable alongside the definition site
+  (`freqtrade.strategy.interface.IStrategy`).
+  Limitation: only statically declared, top-level symbols are visible; anything
+  created at runtime is not. Live objects are still introspected with `inspect`
+  where signatures and docstrings are needed.
+- The depth limit that silently hid modules more than four levels deep is gone —
+  it existed to bound import cost that no longer exists.
+- `freqtrade_get_doc` returns pages in slices and can return a single section.
+  It gained `section`, `offset` and `max_chars` (default 20000), and the
+  response now carries `sections`, `offset`, `returned_chars`, `total_chars`,
+  `truncated` and `next_offset`. `strategy-callbacks` used to arrive as 69 KB
+  (~17k tokens) in one response; it is now ~5k tokens per slice, and asking for
+  one of its 14 sections costs as little as ~90 tokens. **Breaking change** for
+  anyone relying on `content` always holding the whole page.
+
+### Fixed (correctness)
+
+- `source_file` no longer reports a bogus path. It was derived from the first
+  `/freqtrade/` found in the absolute path, so any ancestor directory named
+  `freqtrade` — the layout freqtrade's own docs and Docker image use — produced
+  e.g. `freqtrade/.venv/lib/.../interface.py`. It is now computed relative to
+  the real package directory, and falls back to the bare filename instead of
+  leaking an absolute path.
+- Version comparison uses `packaging.version` (PEP 440) instead of a hand-rolled
+  numeric-prefix parser that mapped `2026.2rc1` onto `(2026, 2)`, letting a
+  release candidate pass as its final release. A version that cannot be parsed
+  now logs a warning and starts anyway, rather than being silently mangled.
+- `TTLCache` is bounded (`maxsize`, default 128, LRU eviction). Expired entries
+  are only dropped when their key is read again, so without a bound every
+  distinct query held its full result list for the whole hour-long TTL.
+
 ### Fixed
 
 - Tools no longer block the server. FastMCP calls synchronous tool functions
@@ -49,7 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installation, skipped when freqtrade is not importable. The rest of the suite
   runs on fake modules and is blind to import failures and path layout — this
   is what surfaced the `SystemExit` bug above. Run with `pytest -m integration`.
-- `anyio` is now an explicit dependency (previously only transitive via `mcp`).
+- `freqtrade_mcp.symbols`: the static symbol index described above.
+- `anyio` and `packaging` are now explicit dependencies (previously only
+  transitive, via `mcp` and `freqtrade` respectively).
 
 ### Removed
 

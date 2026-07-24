@@ -12,7 +12,11 @@ from freqtrade_mcp.docs import (
     list_docs,
     search_docs,
 )
-from freqtrade_mcp.exceptions import DocTopicNotFoundError, ValidationError
+from freqtrade_mcp.exceptions import (
+    DocSectionNotFoundError,
+    DocTopicNotFoundError,
+    ValidationError,
+)
 from freqtrade_mcp.validators import validate_doc_search_query, validate_doc_topic
 
 
@@ -256,6 +260,117 @@ class TestGetDoc:
         # "backtest" is a substring of "backtesting"
         with pytest.raises(DocTopicNotFoundError, match="Did you mean"):
             get_doc("backtest")
+
+
+class TestGetDocSections:
+    """Tests for section extraction in get_doc."""
+
+    def test_lists_sections(self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path) -> None:
+        """The '##' headings are always advertised, so a caller can navigate."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = get_doc("strategy-callbacks")
+        assert result is not None
+        assert result.sections == ["bot_start", "custom_stoploss"]
+
+    def test_returns_only_the_requested_section(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """A section request excludes the rest of the page."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = get_doc("strategy-callbacks", section="bot_start")
+        assert result is not None
+        assert result.section == "bot_start"
+        assert result.content.startswith("## bot_start")
+        assert "Called once at startup." in result.content
+        assert "custom_stoploss" not in result.content
+
+    def test_section_match_is_case_insensitive(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = get_doc("strategy-callbacks", section="BOT_START")
+        assert result is not None
+        assert result.content.startswith("## bot_start")
+
+    def test_last_section_runs_to_end_of_page(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = get_doc("strategy-callbacks", section="custom_stoploss")
+        assert result is not None
+        assert "Calculate custom stoploss." in result.content
+
+    def test_unknown_section_lists_the_valid_ones(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """The error must tell the caller what it could have asked for."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        with pytest.raises(DocSectionNotFoundError, match="bot_start"):
+            get_doc("strategy-callbacks", section="does-not-exist")
+
+
+class TestGetDocPagination:
+    """Tests for slicing in get_doc."""
+
+    def test_short_page_is_not_truncated(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = get_doc("backtesting")
+        assert result is not None
+        assert result.truncated is False
+        assert result.next_offset is None
+        assert result.offset == 0
+        assert result.returned_chars == result.total_chars
+
+    def test_truncates_and_reports_next_offset(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        first = get_doc("strategy-callbacks", max_chars=30)
+        assert first is not None
+        assert first.truncated is True
+        assert first.next_offset == first.returned_chars
+        assert first.returned_chars < first.total_chars
+
+    def test_following_next_offset_reads_the_whole_page(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """Walking next_offset must reconstruct the page without gaps."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        full = get_doc("strategy-callbacks")
+        assert full is not None
+
+        collected = ""
+        offset: int | None = 0
+        while offset is not None:
+            page = get_doc("strategy-callbacks", offset=offset, max_chars=30)
+            assert page is not None
+            collected += page.content
+            offset = page.next_offset
+
+        assert collected == full.content
+
+    def test_offset_past_end_returns_empty(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = get_doc("strategy-callbacks", offset=100_000)
+        assert result is not None
+        assert result.content == ""
+        assert result.truncated is False
+        assert result.next_offset is None
+
+    def test_section_scope_is_paginated(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """total_chars reflects the section, not the whole page."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        page = get_doc("strategy-callbacks")
+        section = get_doc("strategy-callbacks", section="bot_start")
+        assert page is not None
+        assert section is not None
+        assert section.total_chars < page.total_chars
 
 
 class TestValidateDocTopic:

@@ -24,6 +24,7 @@ dependencies = [
     "mcp[cli]>=1.26.0",
     "freqtrade>=2026.2",
     "anyio>=4.5",
+    "packaging>=23.0",
 ]
 
 [project.optional-dependencies]

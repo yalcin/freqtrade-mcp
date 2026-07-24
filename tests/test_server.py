@@ -125,9 +125,9 @@ class TestGetEnumValuesTool:
 class TestSearchCodebaseTool:
     """Tests for freqtrade_search_codebase tool."""
 
-    async def test_returns_structured_result(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_structured_result(self, fake_freqtrade_source: Path) -> None:
         """Should return a completeness-aware result envelope."""
-        result = await freqtrade_search_codebase(query="Signal")
+        result = await freqtrade_search_codebase(query="IStrategy")
         assert isinstance(result, dict)
         assert isinstance(result["matches"], list)
         assert result["returned"] == len(result["matches"])
@@ -136,7 +136,7 @@ class TestSearchCodebaseTool:
         assert isinstance(result["skipped_modules"], list)
         assert result["skipped_module_count"] >= len(result["skipped_modules"])
 
-    async def test_respects_max_results(self, fake_freqtrade_modules: Any) -> None:
+    async def test_respects_max_results(self, fake_freqtrade_source: Path) -> None:
         """Should cap the number of returned symbols and flag truncation."""
         unlimited = await freqtrade_search_codebase(query=".*", max_results=500)
         assert unlimited["total_matches"] >= 2, "fixture should expose several symbols"
@@ -146,20 +146,20 @@ class TestSearchCodebaseTool:
         assert capped["total_matches"] == unlimited["total_matches"]
         assert capped["truncated"] is True
 
-    async def test_not_truncated_when_all_returned(self, fake_freqtrade_modules: Any) -> None:
+    async def test_not_truncated_when_all_returned(self, fake_freqtrade_source: Path) -> None:
         """Truncated must be False when every match fits in the response."""
         result = await freqtrade_search_codebase(query=".*", max_results=500)
         assert result["truncated"] is False
         assert result["returned"] == result["total_matches"]
 
-    async def test_rejects_out_of_range_max_results(self, fake_freqtrade_modules: Any) -> None:
+    async def test_rejects_out_of_range_max_results(self, fake_freqtrade_source: Path) -> None:
         """max_results outside 1-500 should be rejected by validation."""
         from pydantic import ValidationError as PydanticValidationError
 
         with pytest.raises(PydanticValidationError):
-            await freqtrade_search_codebase(query="Signal", max_results=0)
+            await freqtrade_search_codebase(query="IStrategy", max_results=0)
         with pytest.raises(PydanticValidationError):
-            await freqtrade_search_codebase(query="Signal", max_results=501)
+            await freqtrade_search_codebase(query="IStrategy", max_results=501)
 
 
 class TestGetCallbackInfoTool:
@@ -307,6 +307,44 @@ class TestGetDocTool:
 
         with pytest.raises(DocTopicNotFoundError):
             await freqtrade_get_doc(topic="nonexistent-topic")
+
+    async def test_advertises_sections_and_pagination(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """The response must carry the navigation fields an agent needs."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = await freqtrade_get_doc(topic="strategy-callbacks")
+        assert result["sections"] == ["bot_start", "custom_stoploss"]
+        assert result["truncated"] is False
+        assert result["next_offset"] is None
+        assert result["offset"] == 0
+
+    async def test_section_argument(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = await freqtrade_get_doc(topic="strategy-callbacks", section="bot_start")
+        assert result["section"] == "bot_start"
+        assert "custom_stoploss" not in result["content"]
+
+    async def test_max_chars_truncates(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = await freqtrade_get_doc(topic="strategy-callbacks", max_chars=30)
+        assert result["truncated"] is True
+        assert result["next_offset"] == result["returned_chars"]
+
+    async def test_rejects_invalid_pagination_arguments(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        from pydantic import ValidationError as PydanticValidationError
+
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        with pytest.raises(PydanticValidationError):
+            await freqtrade_get_doc(topic="strategy-callbacks", offset=-1)
+        with pytest.raises(PydanticValidationError):
+            await freqtrade_get_doc(topic="strategy-callbacks", max_chars=0)
 
 
 class TestConfigureLogging:

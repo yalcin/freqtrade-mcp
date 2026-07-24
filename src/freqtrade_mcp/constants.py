@@ -10,6 +10,11 @@ MIN_FREQTRADE_VERSION: Final[str] = "2026.2"
 # Default cache TTL in seconds (1 hour)
 DEFAULT_CACHE_TTL: Final[int] = 3600
 
+# Maximum number of entries kept per cache. Without a bound, every distinct
+# search query holds its full result list for the whole TTL, so a chatty agent
+# grows the server's memory unboundedly.
+DEFAULT_CACHE_MAXSIZE: Final[int] = 128
+
 # Validation patterns
 IDENTIFIER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FILTER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9 _-]+$")
@@ -113,6 +118,14 @@ DOC_TOPIC_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 DOC_SEARCH_CONTEXT_LINES: Final[int] = 3
 MAX_DOC_SEARCH_RESULTS: Final[int] = 50
+
+# Documentation page size limits. Freqtrade's largest pages are ~70 KB
+# (strategy-callbacks), i.e. ~17k tokens returned in a single tool response.
+DEFAULT_DOC_MAX_CHARS: Final[int] = 20_000
+MAX_DOC_MAX_CHARS: Final[int] = 100_000
+
+# Markdown heading prefix that delimits a documentation section.
+DOC_SECTION_PREFIX: Final[str] = "## "
 DOCS_UNAVAILABLE_MSG: Final[str] = (
     "Freqtrade documentation not available. "
     "Set FREQTRADE_DOCS_PATH environment variable to the freqtrade docs/ directory."

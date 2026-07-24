@@ -247,6 +247,61 @@ def fake_docs_dir(tmp_path: Path) -> Path:
     return docs_dir
 
 
+@pytest.fixture
+def fake_freqtrade_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create a fake freqtrade source tree on disk for the symbol index.
+
+    The symbol index parses files rather than importing modules, so it needs
+    real source files — the in-memory modules of ``fake_freqtrade_modules`` are
+    invisible to it.
+    """
+    from freqtrade_mcp import symbols
+
+    root = tmp_path / "site-packages" / "freqtrade"
+    (root / "strategy").mkdir(parents=True)
+
+    (root / "__init__.py").write_text('__version__ = "2026.6"\n')
+
+    # Public re-exports, the documented import path for strategy code.
+    (root / "strategy" / "__init__.py").write_text(
+        "from freqtrade.strategy.interface import IStrategy\n"
+        "from freqtrade.strategy.helpers import merge_informative_pair\n"
+        "from freqtrade.strategy.interface import _Private\n"
+        "from os import path\n"
+    )
+    (root / "strategy" / "interface.py").write_text(
+        '"""Strategy interface."""\n\n'
+        "class IStrategy:\n"
+        "    pass\n\n"
+        "class _Private:\n"
+        "    pass\n\n"
+        "def helper():\n"
+        "    pass\n\n"
+        "def _hidden():\n"
+        "    pass\n\n"
+        "async def async_helper():\n"
+        "    pass\n\n"
+        "MAX_RETRIES = 3\n"
+        "_INTERNAL = 1\n"
+        "TIMEFRAME: str = '5m'\n"
+    )
+    (root / "strategy" / "helpers.py").write_text(
+        "def merge_informative_pair():\n    pass\n",
+    )
+    (root / "enums.py").write_text(
+        "from enum import Enum\n\n"
+        "class SignalDirection(str, Enum):\n"
+        "    LONG = 'long'\n\n"
+        "class RunMode(Enum):\n"
+        "    LIVE = 'live'\n",
+    )
+    # Unparseable on purpose: must be reported, not silently dropped.
+    (root / "broken.py").write_text("def oops(:\n")
+
+    monkeypatch.setattr(symbols, "_freqtrade_package_root", lambda: root)
+    return root
+
+
 @pytest.fixture(autouse=True)
 def clear_caches() -> None:
     """Clear all TTL caches between tests."""
@@ -261,6 +316,7 @@ def clear_caches() -> None:
         list_strategy_methods,
         search_codebase,
     )
+    from freqtrade_mcp.symbols import build_symbol_index
 
     get_cache().clear()
 
@@ -273,6 +329,7 @@ def clear_caches() -> None:
         list_enums,
         get_enum_values,
         search_codebase,
+        build_symbol_index,
         _load_docs_index,
     ]:
         if hasattr(fn, "cache"):
