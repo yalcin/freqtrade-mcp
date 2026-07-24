@@ -61,11 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SystemExit` — `freqtrade.plot.plotting` calls `exit(1)` at import time when
   the optional plotly dependency is missing, which a plain `except Exception`
   does not catch.
-- Startup now verifies that `freqtrade.strategy.interface` actually imports.
-  `check_freqtrade_version` only reads distribution metadata, which stays valid
-  on an incomplete installation, so the server used to start cleanly and then
-  fail on every introspection call instead of failing once with an actionable
-  message.
+- Startup now verifies that `freqtrade.strategy.interface` actually imports and
+  says so up front. `check_freqtrade_version` only reads distribution metadata,
+  which stays valid on an installation that cannot be imported, so the server
+  used to start silently and then fail on every introspection call.
+  The check is a **warning, not a fatal error**: freqtrade declares `scipy`
+  only under its `hyperopt` extra while `freqtrade.data.metrics` imports it
+  unconditionally, so a stock `pip install freqtrade` genuinely cannot import
+  the strategy interface. Symbol search reads the source statically and the
+  documentation tools never touch freqtrade, so the server stays useful; the
+  warning names the affected tools and the fix
+  (`pip install freqtrade[hyperopt]`).
 - An unknown `FREQTRADE_MCP_LOG_LEVEL` no longer crashes the server at startup.
   The level was resolved with `getattr(logging, name)`, which happily returns
   non-level attributes such as `BASIC_FORMAT`; `setLevel` then raised
@@ -90,6 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs on fake modules and is blind to import failures and path layout — this
   is what surfaced the `SystemExit` bug above. Run with `pytest -m integration`.
 - `freqtrade_mcp.symbols`: the static symbol index described above.
+- CI installs `freqtrade[hyperopt]` and runs the integration tests as a
+  separate step that **fails if they were skipped**. Without the extra they
+  skipped silently, so the only tests exercising the live package never ran.
 - `anyio` and `packaging` are now explicit dependencies (previously only
   transitive, via `mcp` and `freqtrade` respectively).
 

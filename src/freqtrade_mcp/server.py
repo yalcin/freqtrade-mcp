@@ -35,6 +35,7 @@ from freqtrade_mcp.constants import (
     SERVER_NAME,
 )
 from freqtrade_mcp.docs import get_doc, list_docs, search_docs
+from freqtrade_mcp.exceptions import VersionError
 from freqtrade_mcp.introspection import (
     get_callback_info,
     get_class_info,
@@ -574,6 +575,38 @@ def _configure_logging() -> None:
         )
 
 
+def _validate_freqtrade_installation() -> str:
+    """Check the freqtrade installation and report what will not work.
+
+    A missing or too-old freqtrade is fatal. Being unable to *import* it is
+    not: freqtrade declares scipy only under its ``hyperopt`` extra while
+    ``freqtrade.data.metrics`` imports it unconditionally, so a stock
+    ``pip install freqtrade`` cannot import the strategy interface. Symbol
+    search reads the source tree statically and the documentation tools do not
+    touch freqtrade at all, so most of the server still works — refusing to
+    start would disable those for no reason.
+
+    Returns:
+        The installed freqtrade version.
+
+    Raises:
+        VersionError: If freqtrade is missing or below the minimum version.
+    """
+    ft_version = check_freqtrade_version()
+
+    try:
+        check_freqtrade_importable()
+    except VersionError as e:
+        logger.warning(
+            "%s Tools that introspect live objects (strategy methods, class "
+            "info, callbacks, enums) will fail until this is fixed; symbol "
+            "search and the documentation tools are unaffected.",
+            e,
+        )
+
+    return ft_version
+
+
 def main() -> None:
     """Run the freqtrade-mcp server.
 
@@ -582,13 +615,8 @@ def main() -> None:
     """
     _configure_logging()
 
-    # Validate freqtrade is available before starting. Both checks are fatal:
-    # metadata alone does not prove the package is usable, and a server whose
-    # introspection tools all fail at call time is worse than one that refuses
-    # to start with an actionable message.
     try:
-        ft_version = check_freqtrade_version()
-        check_freqtrade_importable()
+        ft_version = _validate_freqtrade_installation()
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)

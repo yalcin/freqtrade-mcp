@@ -75,10 +75,14 @@ def check_freqtrade_importable() -> None:
     """Verify that the freqtrade strategy interface can actually be imported.
 
     ``check_freqtrade_version`` only reads distribution metadata, which stays
-    valid even when the installation is unusable — a missing transitive
-    dependency, for instance. Without this check the server starts cleanly and
-    then fails on every introspection call instead of failing once, loudly, at
-    startup.
+    valid even when the package cannot be imported. Callers get a diagnostic
+    up front instead of discovering the problem on every introspection call.
+
+    This is expected to fail on a stock install: freqtrade declares scipy only
+    under its ``hyperopt`` extra, while ``freqtrade.data.metrics`` imports it
+    unconditionally and sits on the import path of the strategy interface.
+    Treat the failure as a warning, not as a reason to refuse service — see
+    :func:`freqtrade_mcp.server._validate_freqtrade_installation`.
 
     Raises:
         VersionError: If the freqtrade strategy interface cannot be imported.
@@ -89,9 +93,10 @@ def check_freqtrade_importable() -> None:
     except Exception as exc:
         msg = (
             f"freqtrade is installed but '{module_path}' cannot be imported "
-            f"({type(exc).__name__}: {exc}). The freqtrade installation looks "
-            "incomplete — reinstall it in the same environment as freqtrade-mcp, "
-            "e.g. 'pip install --force-reinstall freqtrade'."
+            f"({type(exc).__name__}: {exc}). This usually means an optional "
+            "freqtrade dependency is absent — scipy in particular is only "
+            "installed by the 'hyperopt' extra. Install it in the same "
+            "environment as freqtrade-mcp, e.g. 'pip install freqtrade[hyperopt]'."
         )
         raise VersionError(msg) from exc
 

@@ -14,8 +14,10 @@ from unittest.mock import patch
 import pytest
 
 from freqtrade_mcp.constants import ENV_LOG_LEVEL
+from freqtrade_mcp.exceptions import VersionError
 from freqtrade_mcp.server import (
     _configure_logging,
+    _validate_freqtrade_installation,
     freqtrade_get_callback_info,
     freqtrade_get_class_info,
     freqtrade_get_config_schema,
@@ -345,6 +347,45 @@ class TestGetDocTool:
             await freqtrade_get_doc(topic="strategy-callbacks", offset=-1)
         with pytest.raises(PydanticValidationError):
             await freqtrade_get_doc(topic="strategy-callbacks", max_chars=0)
+
+
+class TestValidateFreqtradeInstallation:
+    """Tests for _validate_freqtrade_installation."""
+
+    def test_returns_version_when_everything_works(self) -> None:
+        with (
+            patch("freqtrade_mcp.server.check_freqtrade_version", return_value="2026.6"),
+            patch("freqtrade_mcp.server.check_freqtrade_importable"),
+        ):
+            assert _validate_freqtrade_installation() == "2026.6"
+
+    def test_unimportable_freqtrade_is_not_fatal(self) -> None:
+        """A stock freqtrade install must not stop the server from starting.
+
+        freqtrade declares scipy only under its 'hyperopt' extra while
+        freqtrade.data.metrics imports it unconditionally, so on a plain
+        `pip install freqtrade` the strategy interface cannot be imported.
+        Symbol search and the documentation tools work regardless.
+        """
+        with (
+            patch("freqtrade_mcp.server.check_freqtrade_version", return_value="2026.6"),
+            patch(
+                "freqtrade_mcp.server.check_freqtrade_importable",
+                side_effect=VersionError("cannot be imported"),
+            ),
+        ):
+            assert _validate_freqtrade_installation() == "2026.6"
+
+    def test_missing_freqtrade_is_fatal(self) -> None:
+        """A missing or too-old freqtrade still aborts startup."""
+        with (
+            patch(
+                "freqtrade_mcp.server.check_freqtrade_version",
+                side_effect=VersionError("not installed"),
+            ),
+            pytest.raises(VersionError, match="not installed"),
+        ):
+            _validate_freqtrade_installation()
 
 
 class TestConfigureLogging:
