@@ -4,6 +4,7 @@ All LLM-generated inputs must pass through these validators before use.
 Uses a whitelist approach: only explicitly allowed patterns are accepted.
 """
 
+import fnmatch
 import re
 
 from freqtrade_mcp.constants import (
@@ -13,7 +14,7 @@ from freqtrade_mcp.constants import (
     IDENTIFIER_PATTERN,
     MAX_INPUT_LENGTH,
     MODULE_PATH_PATTERN,
-    SAFE_REGEX_PATTERN,
+    SAFE_SEARCH_PATTERN,
 )
 from freqtrade_mcp.exceptions import ValidationError
 
@@ -110,16 +111,19 @@ def validate_class_path(path: str) -> tuple[str, str]:
 
 
 def validate_search_pattern(pattern: str) -> re.Pattern[str]:
-    """Validate and compile a search regex pattern.
+    """Validate and compile a safe glob-style symbol search pattern.
 
-    Restricts the pattern to a whitelisted character set and caps its length,
-    limiting (but not eliminating) ReDoS and injection risk.
+    User-controlled regular expressions are not evaluated directly. Only
+    literals, ``*`` (any sequence), ``?`` (one character), the legacy ``.*``
+    spelling, and optional leading ``^`` / trailing ``$`` anchors are accepted.
+    Every literal is escaped before compilation, so nested quantifiers and other
+    backtracking constructs cannot be expressed.
 
     Args:
-        pattern: Regex pattern string to validate.
+        pattern: Glob-style search pattern to validate.
 
     Returns:
-        Compiled regex pattern.
+        Compiled safe search pattern.
 
     Raises:
         ValidationError: If the pattern is invalid or contains unsafe characters.
@@ -130,18 +134,45 @@ def validate_search_pattern(pattern: str) -> re.Pattern[str]:
         )
         raise ValidationError(msg)
 
-    if not SAFE_REGEX_PATTERN.match(pattern):
+    if not SAFE_SEARCH_PATTERN.fullmatch(pattern):
         msg = (
             f"Invalid search pattern: '{pattern}' contains unsafe characters. "
-            "Only alphanumeric characters, underscores, and basic regex operators are allowed."
+            "Use letters, digits, underscores, spaces, hyphens, '.', '*', '?', "
+            "and optional leading '^' / trailing '$' anchors."
         )
         raise ValidationError(msg)
 
-    try:
-        return re.compile(pattern, re.IGNORECASE)
-    except re.error as e:
-        msg = f"Invalid regex pattern: '{pattern}' — {e}"
-        raise ValidationError(msg) from e
+    start_anchored = pattern.startswith("^")
+    end_anchored = pattern.endswith("$")
+    body_start = 1 if start_anchored else 0
+    body_end = -1 if end_anchored else len(pattern)
+    body = pattern[body_start:body_end]
+
+    if "^" in body or "$" in body:
+        msg = "Invalid search pattern: '^' and '$' are only allowed at the pattern boundaries."
+        raise ValidationError(msg)
+
+    glob_parts: list[str] = []
+    index = 0
+    while index < len(body):
+        if body.startswith(".*", index):
+            glob_parts.append("*")
+            index += 2
+            continue
+
+        glob_parts.append(body[index])
+        index += 1
+
+    glob_pattern = "".join(glob_parts)
+    if not start_anchored:
+        glob_pattern = f"*{glob_pattern}"
+    if not end_anchored:
+        glob_pattern = f"{glob_pattern}*"
+
+    expression = fnmatch.translate(glob_pattern)
+    if start_anchored:
+        expression = f"^{expression}"
+    return re.compile(expression, re.IGNORECASE)
 
 
 def validate_filter_string(value: str, label: str = "filter") -> str:

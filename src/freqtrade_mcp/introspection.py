@@ -15,7 +15,6 @@ from typing import Any
 
 from freqtrade_mcp.cache import ttl_cache
 from freqtrade_mcp.constants import (
-    CONFIG_SECTIONS,
     DATAFRAME_CONTEXTS,
     DEFAULT_SYMBOL_SEARCH_RESULTS,
     ISTRATEGY_CLASS_PATH,
@@ -28,6 +27,7 @@ from freqtrade_mcp.exceptions import (
     IntrospectionError,
     MethodNotFoundError,
     ModuleImportError,
+    ValidationError,
 )
 from freqtrade_mcp.models import (
     CallbackInfo,
@@ -51,6 +51,11 @@ from freqtrade_mcp.validators import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CONFIG_SCHEMA_MODULES: tuple[str, ...] = (
+    "freqtrade.config_schema",
+    "freqtrade.configuration.config_schema",
+)
 
 
 def _import_module(module_path: str) -> ModuleType:
@@ -346,12 +351,8 @@ def list_enums(filter_str: str | None = None) -> list[EnumSummary]:
 
     enums: list[EnumSummary] = []
 
-    # Scan the freqtrade.enums module
-    try:
-        enums_module = _import_module("freqtrade.enums")
-    except ModuleImportError:
-        logger.warning("freqtrade.enums module not found")
-        return enums
+    # Do not turn an incomplete installation into a misleading empty result.
+    enums_module = _import_module("freqtrade.enums")
 
     for name in dir(enums_module):
         if name.startswith("_"):
@@ -423,7 +424,7 @@ def search_codebase(
     reported separately from the (capped) list of returned symbols.
 
     Args:
-        query: Validated regex search pattern.
+        query: Validated safe glob-style search pattern.
         max_results: Maximum number of symbols to return.
 
     Returns:
@@ -455,6 +456,7 @@ def search_codebase(
     )
 
 
+@ttl_cache()
 def get_callback_info(callback_name: str) -> CallbackInfo:
     """Get detailed information about a strategy callback method.
 
@@ -492,8 +494,86 @@ def get_callback_info(callback_name: str) -> CallbackInfo:
     )
 
 
+def _load_config_properties() -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """Load properties from the installed Freqtrade JSON schema.
+
+    Freqtrade moved the schema module between supported releases, so both the
+    current and legacy import paths are tried. Returning a hardcoded fallback
+    would make an incomplete installation look authoritative and drift from the
+    installed version.
+
+    Returns:
+        Tuple of property definitions and required property names.
+
+    Raises:
+        IntrospectionError: If no supported schema module exposes CONF_SCHEMA.
+    """
+    failures: list[str] = []
+
+    for module_path in _CONFIG_SCHEMA_MODULES:
+        try:
+            module = _import_module(module_path)
+        except ModuleImportError as exc:
+            failures.append(str(exc))
+            continue
+
+        schema = getattr(module, "CONF_SCHEMA", None)
+        if not isinstance(schema, dict):
+            failures.append(f"'{module_path}' does not expose a dictionary CONF_SCHEMA")
+            continue
+
+        raw_properties = schema.get("properties")
+        if not isinstance(raw_properties, dict):
+            failures.append(f"'{module_path}.CONF_SCHEMA' has no properties mapping")
+            continue
+
+        properties = {
+            name: definition
+            for name, definition in raw_properties.items()
+            if isinstance(name, str) and isinstance(definition, dict)
+        }
+        raw_required = schema.get("required", [])
+        if not isinstance(raw_required, list):
+            raw_required = []
+        required = {name for name in raw_required if isinstance(name, str)}
+        return properties, required
+
+    detail = "; ".join(failures) if failures else "no schema module was available"
+    msg = f"Cannot load the installed Freqtrade configuration schema: {detail}"
+    raise IntrospectionError(msg)
+
+
+def _describe_config_property(
+    key: str,
+    definition: dict[str, Any],
+    *,
+    required: bool,
+) -> str:
+    """Create a concise description from one JSON-schema property."""
+    raw_description = definition.get("description")
+    if isinstance(raw_description, str) and raw_description.strip():
+        description = raw_description.strip()
+    else:
+        schema_type = definition.get("type")
+        reference = definition.get("$ref")
+        if isinstance(schema_type, list):
+            type_label = " or ".join(str(item) for item in schema_type)
+        elif isinstance(schema_type, str):
+            type_label = schema_type
+        elif isinstance(reference, str):
+            type_label = reference.rsplit("/", maxsplit=1)[-1]
+        else:
+            type_label = "unspecified type"
+        description = f"Freqtrade configuration key '{key}' ({type_label})."
+
+    if required:
+        description = f"{description.rstrip()} Required."
+    return description
+
+
+@ttl_cache()
 def get_config_schema(section: str | None = None) -> list[ConfigKey]:
-    """Return known configuration keys and descriptions.
+    """Return configuration keys from the installed Freqtrade schema.
 
     Args:
         section: Optional section filter.
@@ -505,33 +585,16 @@ def get_config_schema(section: str | None = None) -> list[ConfigKey]:
     if section:
         validated_section = validate_filter_string(section, label="config section")
 
-    # Try to get config keys from freqtrade's configuration module
+    properties, required = _load_config_properties()
     config_keys: list[ConfigKey] = []
 
-    # Always include known top-level sections
-    for key, description in CONFIG_SECTIONS.items():
-        if validated_section and validated_section not in key.lower():
-            continue
-        config_keys.append(ConfigKey(key=key, description=description))
-
-    # Try to extract more config info from freqtrade.configuration if available
-    try:
-        config_mod = _import_module("freqtrade.configuration")
-        for name in sorted(dir(config_mod)):
-            if name.startswith("_"):
+    for key, definition in sorted(properties.items()):
+        description = _describe_config_property(key, definition, required=key in required)
+        if validated_section:
+            searchable = f"{key} {description}".lower()
+            if validated_section not in searchable:
                 continue
-            obj = getattr(config_mod, name, None)
-            if isinstance(obj, dict) and name.upper() == name:
-                if validated_section and validated_section not in name.lower():
-                    continue
-                config_keys.append(
-                    ConfigKey(
-                        key=name,
-                        description=f"Configuration constant: {name} ({len(obj)} entries)",
-                    )
-                )
-    except ModuleImportError:
-        pass
+        config_keys.append(ConfigKey(key=key, description=description))
 
     return config_keys
 
@@ -544,10 +607,18 @@ def get_dataframe_columns(context: str | None = None) -> list[DataframeColumn]:
 
     Returns:
         List of DataFrame column entries.
+
+    Raises:
+        ValidationError: If context is not one of the documented options.
     """
     validated_context: str | None = None
     if context:
         validated_context = validate_filter_string(context, label="dataframe context")
+        allowed_contexts = {*DATAFRAME_CONTEXTS, "indicators"}
+        if validated_context not in allowed_contexts:
+            options = ", ".join(sorted(allowed_contexts))
+            msg = f"Invalid dataframe context: '{context}'. Expected one of: {options}."
+            raise ValidationError(msg)
 
     columns: list[DataframeColumn] = []
 

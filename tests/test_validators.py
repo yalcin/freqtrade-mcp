@@ -133,10 +133,11 @@ class TestValidateSearchPattern:
     """Tests for validate_search_pattern."""
 
     def test_valid_patterns(self) -> None:
-        """Safe regex patterns should compile."""
+        """Literal search patterns should compile."""
         pat = validate_search_pattern("IStrategy")
         assert isinstance(pat, re.Pattern)
         assert pat.search("IStrategy") is not None
+        assert pat.search("MyIStrategyBase") is not None
 
     def test_case_insensitive(self) -> None:
         """Patterns should be case-insensitive."""
@@ -144,9 +145,35 @@ class TestValidateSearchPattern:
         assert pat.search("IStrategy") is not None
 
     def test_wildcard_pattern(self) -> None:
-        """Wildcards should work."""
+        """The legacy regex-style wildcard should remain compatible."""
         pat = validate_search_pattern("custom_.*")
         assert pat.search("custom_stoploss") is not None
+
+    def test_glob_wildcards_and_anchors(self) -> None:
+        """Safe glob wildcards and boundary anchors should work."""
+        pat = validate_search_pattern("^custom_?xit$")
+        assert pat.search("custom_exit") is not None
+        assert pat.search("my_custom_exit") is None
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "([A-Za-z_]+)+Z",
+            "(foo|bar)",
+            r"foo\1",
+            "foo{1,3}",
+            "[A-Z]+",
+        ],
+    )
+    def test_rejects_backtracking_regex_constructs(self, pattern: str) -> None:
+        """User input must not be able to express arbitrary regular expressions."""
+        with pytest.raises(ValidationError, match="unsafe characters"):
+            validate_search_pattern(pattern)
+
+    def test_rejects_anchors_inside_pattern(self) -> None:
+        """Anchors are only valid at the outer boundaries."""
+        with pytest.raises(ValidationError, match="pattern boundaries"):
+            validate_search_pattern("foo^bar")
 
     def test_empty_pattern(self) -> None:
         """Empty pattern should fail."""

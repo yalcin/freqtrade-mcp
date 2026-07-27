@@ -6,6 +6,7 @@ instead. Tests therefore await the tools directly (pytest-asyncio auto mode).
 """
 
 import logging
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,28 @@ class TestListStrategyMethodsTool:
         result = await freqtrade_list_strategy_methods(filter=None)
         assert isinstance(result, list)
         assert len(result) > 0
+
+    async def test_offloads_introspection_to_worker_thread(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Blocking introspection must not execute on the event-loop thread."""
+        caller_thread = threading.get_ident()
+        worker_threads: list[int] = []
+
+        def fake_list_strategy_methods(*, filter_str: str | None = None) -> list[Any]:
+            del filter_str
+            worker_threads.append(threading.get_ident())
+            return []
+
+        monkeypatch.setattr(
+            "freqtrade_mcp.server.list_strategy_methods",
+            fake_list_strategy_methods,
+        )
+
+        assert await freqtrade_list_strategy_methods() == []
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != caller_thread
 
 
 class TestGetMethodSignatureTool:

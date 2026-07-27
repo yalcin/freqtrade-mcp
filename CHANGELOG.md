@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TTLCache` is bounded (`maxsize`, default 128, LRU eviction). Expired entries
   are only dropped when their key is read again, so without a bound every
   distinct query held its full result list for the whole hour-long TTL.
+- Symbol search now accepts a safe glob-style language (`*`, `?`, and optional
+  boundary anchors) and escapes every literal before compiling it. The previous
+  regex character whitelist still admitted nested quantifiers and was vulnerable
+  to catastrophic backtracking.
+- Configuration discovery now reads the installed freqtrade `CONF_SCHEMA`
+  instead of returning a stale 23-key table. Import failures are reported
+  explicitly, as are invalid enum and DataFrame-context requests.
+- Regression tests cover event-loop offloading and the real installed
+  configuration schema; the test suite now enforces at least 90% coverage.
 
 ### Fixed
 

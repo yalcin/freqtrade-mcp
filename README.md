@@ -25,7 +25,7 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 - **Enum Discovery**: List and inspect all trading-related enums and their values
 - **Codebase Search**: Search for classes, functions, constants, and enums by name pattern
 - **Callback Details**: Get detailed info about strategy callbacks (bot_start, custom_stoploss, etc.)
-- **Config Schema**: Browse known configuration keys and their descriptions
+- **Config Schema**: Browse the installed freqtrade schema and its descriptions
 - **DataFrame Columns**: Discover available DataFrame columns in strategy methods
 - **Documentation Access**: Browse, search, and read freqtrade markdown documentation
 - **Version Info**: Check installed freqtrade and MCP server versions
@@ -33,7 +33,8 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 ## Security
 
 - **Read-only**: No trading, no exchange connections, no side effects
-- **Input validation**: All LLM inputs validated with regex whitelists
+- **Input validation**: All LLM inputs use strict allow-lists and length limits;
+  code search accepts only glob-style patterns built from escaped literals
 - **No eval/exec**: Only uses Python's `inspect` and `ast` modules
 - **No import side effects in search**: symbol search parses source with `ast`
   rather than importing it, so no third-party module-level code runs
