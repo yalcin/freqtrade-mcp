@@ -45,8 +45,9 @@ freqtrade-mcp is designed to be resistant to common MCP attack vectors:
 
 - **No `eval()` or `exec()`** anywhere in the codebase
 - Uses only `inspect` and `ast` modules for introspection
-- All inputs validated with regex whitelists before use
-- Search patterns are validated for safe regex characters to prevent ReDoS
+- All inputs are validated with strict allow-lists and length limits before use
+- Search accepts only glob-style patterns; literals are escaped before compiling,
+  so callers cannot inject regular-expression operators or trigger ReDoS
 
 ### Transport Security
 

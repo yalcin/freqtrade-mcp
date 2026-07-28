@@ -91,7 +91,7 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--cov=freqtrade_mcp --cov-report=term-missing --cov-report=html"
+addopts = "--cov=freqtrade_mcp --cov-report=term-missing --cov-report=html --cov-fail-under=90"
 markers = [
     "integration: exercises a real, importable freqtrade installation (skipped otherwise)",
 ]

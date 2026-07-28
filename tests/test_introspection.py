@@ -12,6 +12,7 @@ from freqtrade_mcp.exceptions import (
     IntrospectionError,
     MethodNotFoundError,
     ModuleImportError,
+    ValidationError,
 )
 from freqtrade_mcp.introspection import (
     get_callback_info,
@@ -174,6 +175,18 @@ class TestListEnums:
         names = [e.name for e in enums]
         assert "SignalDirection" in names
 
+    def test_import_failure_is_not_reported_as_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken installation should raise instead of looking enum-free."""
+
+        def fail_import(_module_path: str) -> None:
+            raise ModuleImportError("broken enum import")
+
+        monkeypatch.setattr("freqtrade_mcp.introspection._import_module", fail_import)
+        with pytest.raises(ModuleImportError, match="broken enum import"):
+            list_enums()
+
 
 class TestGetEnumValues:
     """Tests for get_enum_values."""
@@ -222,10 +235,12 @@ class TestGetConfigSchema:
     """Tests for get_config_schema."""
 
     def test_all_sections(self, fake_freqtrade_modules: Any) -> None:
-        """Should return config keys from all sections."""
+        """Should return every property from the live schema."""
         keys = get_config_schema()
-        assert len(keys) > 0
+        assert {item.key for item in keys} == {"exchange", "pairlists", "stoploss", "strategy"}
         assert all(isinstance(k, ConfigKey) for k in keys)
+        exchange = next(item for item in keys if item.key == "exchange")
+        assert exchange.description.endswith("Required.")
 
     def test_filter_by_section(self, fake_freqtrade_modules: Any) -> None:
         """Should filter by section keyword."""
@@ -235,13 +250,23 @@ class TestGetConfigSchema:
             "exchange" in k.key.lower() or "exchange" in k.description.lower() for k in keys
         )
 
-    def test_returns_known_sections(self, fake_freqtrade_modules: Any) -> None:
-        """Should include well-known config sections."""
-        keys = get_config_schema()
-        key_names = [k.key for k in keys]
-        assert "exchange" in key_names
-        assert "stoploss" in key_names
-        assert "strategy" in key_names
+    def test_description_falls_back_to_schema_type(self, fake_freqtrade_modules: Any) -> None:
+        """Properties without descriptions should still be useful."""
+        keys = get_config_schema(section="strategy")
+        assert len(keys) == 1
+        assert keys[0].description == "Freqtrade configuration key 'strategy' (string)."
+
+    def test_schema_failure_is_not_silently_replaced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing schema modules should produce an actionable error."""
+
+        def fail_import(_module_path: str) -> None:
+            raise ModuleImportError("schema unavailable")
+
+        monkeypatch.setattr("freqtrade_mcp.introspection._import_module", fail_import)
+        with pytest.raises(IntrospectionError, match="Cannot load"):
+            get_config_schema()
 
 
 class TestGetDataframeColumns:
@@ -282,9 +307,9 @@ class TestGetDataframeColumns:
         assert "ema" in names
 
     def test_invalid_context(self) -> None:
-        """Invalid context should return empty list."""
-        columns = get_dataframe_columns(context="nonexistent")
-        assert len(columns) == 0
+        """Invalid context should list the supported options."""
+        with pytest.raises(ValidationError, match="Expected one of"):
+            get_dataframe_columns(context="nonexistent")
 
 
 class TestSearchCodebase:

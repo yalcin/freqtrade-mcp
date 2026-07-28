@@ -238,7 +238,8 @@ async def freqtrade_search_codebase(
         Field(
             description=(
                 "Search pattern for symbol names (classes, functions, constants). "
-                "Supports basic regex (alphanumeric, underscores, wildcards)."
+                "Supports safe glob-style wildcards: '*' for any sequence, '?' for "
+                "one character, and optional leading '^' / trailing '$' anchors."
             ),
             max_length=256,
         ),
@@ -255,8 +256,9 @@ async def freqtrade_search_codebase(
     """Search for symbols in the freqtrade codebase by name pattern.
 
     Searches for classes, functions, constants, and enums matching the given
-    pattern. Supports basic regex patterns using alphanumeric characters,
-    underscores, and standard regex operators.
+    pattern. Supports safe glob-style wildcards: ``*`` for any sequence, ``?``
+    for one character, and optional leading ``^`` / trailing ``$`` anchors.
+    The legacy ``.*`` spelling is accepted as an alias for ``*``.
 
     The response reports completeness explicitly. Check ``truncated`` before
     concluding that a symbol does not exist: a broad pattern such as ".*"
@@ -265,7 +267,7 @@ async def freqtrade_search_codebase(
     the freqtrade tree could not be parsed and was never searched.
 
     Args:
-        query: Search pattern for symbol names. Supports basic regex.
+        query: Safe glob-style search pattern for symbol names.
         max_results: Maximum number of symbols to return (1-500, default 50).
 
     Returns:
@@ -317,19 +319,19 @@ async def freqtrade_get_config_schema(
         Field(
             description=(
                 "Optional config section filter. "
-                "Examples: 'exchange', 'pairlist', 'stoploss', 'order_types'."
+                "Examples: 'exchange', 'pairlists', 'stoploss', 'order_types'."
             ),
             max_length=256,
         ),
     ] = None,
 ) -> list[dict[str, Any]]:
-    """Return known freqtrade configuration keys and their descriptions.
+    """Return live freqtrade configuration keys and their descriptions.
 
-    Lists configuration keys organized by section. Use the optional section
-    parameter to filter by a specific config area.
+    Reads the JSON schema from the installed Freqtrade version. Use the optional
+    section parameter to filter by a key or description.
 
     Args:
-        section: Optional section filter (e.g., "exchange", "pairlist", "stoploss").
+        section: Optional section filter (e.g., "exchange", "pairlists", "stoploss").
 
     Returns:
         List of config key entries with descriptions.

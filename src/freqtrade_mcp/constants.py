@@ -19,7 +19,7 @@ DEFAULT_CACHE_MAXSIZE: Final[int] = 128
 IDENTIFIER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FILTER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9 _-]+$")
 MODULE_PATH_PATTERN: Final[re.Pattern[str]] = re.compile(r"^freqtrade(\.[A-Za-z_][A-Za-z0-9_]*)+$")
-SAFE_REGEX_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.*+?^$|()\\[\]{}_ -]+$")
+SAFE_SEARCH_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9_.*?^$ -]+$")
 
 # Maximum length for input strings
 MAX_INPUT_LENGTH: Final[int] = 256
@@ -81,34 +81,6 @@ DATAFRAME_CONTEXTS: Final[dict[str, dict[str, str]]] = {
         "exit_short": "Short exit signal (int: 0 or 1)",
         "exit_tag": "Exit tag string for trade tracking (str, optional)",
     },
-}
-
-# Known top-level config sections with human-readable descriptions
-CONFIG_SECTIONS: Final[dict[str, str]] = {
-    "exchange": "Exchange connection settings: name, API keys, ccxt options, pair whitelist.",
-    "pairlist": "Pairlist handlers that build and filter the tradable pair list "
-    "(e.g. StaticPairList, VolumePairList).",
-    "stake_currency": "Currency used for trading stakes (e.g. 'USDT').",
-    "stake_amount": "Amount of stake_currency per trade, or 'unlimited' to spread the balance.",
-    "dry_run": "Simulation mode: true trades with simulated money, false trades live.",
-    "trading_mode": "Market type to trade: 'spot', 'margin' or 'futures'.",
-    "margin_mode": "Margin mode for leveraged trading: 'isolated' or 'cross'.",
-    "strategy": "Name of the strategy class to load.",
-    "timeframe": "Candle timeframe (e.g. '5m', '1h'); used if the strategy does not set one.",
-    "order_types": "Order type per action: entry, exit, stoploss, stoploss_on_exchange.",
-    "order_time_in_force": "Time-in-force per order side (GTC, FOK, IOC, PO).",
-    "entry_pricing": "How entry order prices are derived from the orderbook or ticker.",
-    "exit_pricing": "How exit order prices are derived from the orderbook or ticker.",
-    "minimal_roi": "Minimum ROI thresholds keyed by trade age in minutes; triggers exits.",
-    "stoploss": "Stoploss ratio relative to the entry price (e.g. -0.10 for -10%).",
-    "trailing_stop": "Trailing stoploss settings (trailing_stop_positive, offset).",
-    "unfilledtimeout": "Minutes to wait before cancelling unfilled entry/exit orders.",
-    "protections": "Protection plugins (StoplossGuard, CooldownPeriod, MaxDrawdown, ...).",
-    "telegram": "Telegram bot notifications and remote control settings.",
-    "api_server": "Local REST/WebSocket API server settings (used by FreqUI).",
-    "internals": "Bot-internal settings such as process throttling and heartbeat interval.",
-    "dataformat_ohlcv": "Storage format for OHLCV data (json, jsongz, feather, parquet).",
-    "dataformat_trades": "Storage format for trades data (json, jsongz, feather, parquet).",
 }
 
 # Documentation settings

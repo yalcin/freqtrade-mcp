@@ -15,6 +15,7 @@ import pytest
 from freqtrade_mcp.constants import ISTRATEGY_CLASS_PATH, MAX_SYMBOL_SEARCH_RESULTS
 from freqtrade_mcp.introspection import (
     get_class_info,
+    get_config_schema,
     get_istrategy_class,
     get_method_signature,
     list_strategy_methods,
@@ -73,6 +74,21 @@ class TestRealIStrategy:
         assert info.name == "IStrategy"
         assert "IStrategy" in info.method_resolution_order
         assert len(info.public_methods) > 10
+
+
+class TestRealConfigSchema:
+    """Configuration discovery against the installed Freqtrade schema."""
+
+    def test_matches_installed_schema(self) -> None:
+        """Every top-level live schema property should be exposed exactly once."""
+        from freqtrade.config_schema import CONF_SCHEMA
+
+        expected = set(CONF_SCHEMA["properties"])
+        actual = {item.key for item in get_config_schema()}
+
+        assert actual == expected
+        assert "pairlists" in actual
+        assert "pairlist" not in actual
 
 
 class TestRealSymbolSearch:

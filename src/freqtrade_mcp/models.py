@@ -72,7 +72,8 @@ class SearchCodebaseInput(BaseModel):
     query: str = Field(
         description=(
             "Search pattern for symbol names (classes, functions, constants). "
-            "Supports basic regex (alphanumeric, underscores, wildcards)."
+            "Supports safe glob-style wildcards: '*' for any sequence, '?' for "
+            "one character, and optional leading '^' / trailing '$' anchors."
         ),
         max_length=256,
     )
@@ -103,7 +104,7 @@ class GetConfigSchemaInput(BaseModel):
         default=None,
         description=(
             "Optional config section filter. "
-            "Examples: 'exchange', 'pairlist', 'stoploss', 'order_types'."
+            "Examples: 'exchange', 'pairlists', 'stoploss', 'order_types'."
         ),
         max_length=256,
     )
@@ -313,14 +314,6 @@ class DataframeColumn(BaseModel):
     name: str = Field(description="Column name.")
     description: str = Field(description="Column description including type.")
     context: str = Field(description="Context where this column is available.")
-
-
-class VersionInfo(BaseModel):
-    """Version and environment information."""
-
-    mcp_server_version: str = Field(description="freqtrade-mcp server version.")
-    freqtrade_version: str = Field(description="Installed freqtrade version.")
-    python_version: str = Field(description="Python version.")
 
 
 class DocTopic(BaseModel):

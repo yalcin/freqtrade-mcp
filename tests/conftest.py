@@ -150,10 +150,7 @@ def _create_fake_freqtrade_module() -> types.ModuleType:
     ft.__version__ = "2026.3"  # type: ignore[attr-defined]
     ft.__path__ = []  # type: ignore[attr-defined]
 
-    # Public symbols on the root module. search_codebase discovers submodules
-    # through pkgutil.walk_packages, which yields nothing for a synthetic
-    # module with an empty __path__ — so anything the symbol search should find
-    # has to live on the root module itself.
+    # Public symbols used by the live-introspection unit tests.
     ft.IStrategy = FakeIStrategy  # type: ignore[attr-defined]
     ft.SignalDirection = FakeSignalDirection  # type: ignore[attr-defined]
     ft.TradeExitType = FakeTradeExitType  # type: ignore[attr-defined]
@@ -199,6 +196,19 @@ def fake_freqtrade_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, types.M
     ft_config = types.ModuleType("freqtrade.configuration")
     ft_config.__path__ = []  # type: ignore[attr-defined]
     ft_config.AVAILABLE_CLI_OPTIONS = {"option1": "desc1"}  # type: ignore[attr-defined]
+    ft_config_schema = types.ModuleType("freqtrade.config_schema")
+    ft_config_schema.CONF_SCHEMA = {  # type: ignore[attr-defined]
+        "properties": {
+            "exchange": {
+                "description": "Exchange configuration.",
+                "$ref": "#/definitions/exchange",
+            },
+            "pairlists": {"description": "Configuration for pairlists.", "type": "array"},
+            "stoploss": {"description": "Stoploss ratio.", "type": "number"},
+            "strategy": {"type": "string"},
+        },
+        "required": ["exchange"],
+    }
 
     modules = {
         "freqtrade": ft,
@@ -206,6 +216,7 @@ def fake_freqtrade_modules(monkeypatch: pytest.MonkeyPatch) -> dict[str, types.M
         "freqtrade.strategy.interface": ft_strategy_interface,
         "freqtrade.enums": ft_enums,
         "freqtrade.configuration": ft_config,
+        "freqtrade.config_schema": ft_config_schema,
     }
 
     for name, mod in modules.items():
@@ -308,7 +319,9 @@ def clear_caches() -> None:
     from freqtrade_mcp.cache import get_cache
     from freqtrade_mcp.docs import _load_docs_index
     from freqtrade_mcp.introspection import (
+        get_callback_info,
         get_class_info,
+        get_config_schema,
         get_enum_values,
         get_istrategy_class,
         get_method_signature,
@@ -326,6 +339,8 @@ def clear_caches() -> None:
         list_strategy_methods,
         get_method_signature,
         get_class_info,
+        get_config_schema,
+        get_callback_info,
         list_enums,
         get_enum_values,
         search_codebase,
