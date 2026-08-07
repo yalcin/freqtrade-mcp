@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer include raw exception text or absolute filesystem paths.
 - Source distributions exclude local GitNexus indexes and generated agent
   instruction files, preventing workspace analysis artifacts from being shipped.
+- The MCP SDK dependency is constrained to the compatible 1.x line; MCP 2.0
+  renamed `FastMCP` to `MCPServer` and requires a separate migration.
 
 ### Fixed
 

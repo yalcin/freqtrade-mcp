@@ -45,7 +45,7 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 
 - Python >= 3.13
 - freqtrade >= 2026.2
-- mcp[cli] >= 1.26.0
+- mcp[cli] >= 1.26.0, < 2.0
 
 ## Installation
 
