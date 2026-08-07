@@ -1,27 +1,16 @@
-# Publishing is disabled in this fork.
-#
-# The PyPI project `freqtrade-mcp-server` belongs to the upstream repository
-# (yalcin/freqtrade-mcp), and so do the author and project URLs in
-# pyproject.toml. Trusted publishing is configured for upstream, not for this
-# fork, so a `v*` tag pushed here would either fail or publish under someone
-# else's project identity. Changes made here are meant to go upstream as pull
-# requests.
-#
-# The build job below still runs on demand so packaging stays verifiable.
-# To restore automatic publishing in a fork you would need to: pick a distinct
-# `name` in pyproject.toml, update authors/urls, configure trusted publishing
-# for this repository, and re-add the `on: push: tags: - "v*"` trigger plus the
-# `pypa/gh-action-pypi-publish` step.
-name: Release (build only)
+name: Release
 
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -36,3 +25,5 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

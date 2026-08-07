@@ -8,6 +8,7 @@ from freqtrade_mcp.docs import (
     _discover_docs_path,
     _extract_title,
     _load_docs_index,
+    _scan_directory,
     get_doc,
     list_docs,
     search_docs,
@@ -31,12 +32,18 @@ class TestDiscoverDocsPath:
         assert result is not None
         assert result == fake_docs_dir.resolve()
 
-    def test_env_var_invalid_path(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_env_var_invalid_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(empty_dir))
         result = _discover_docs_path()
         assert result is None
+        assert str(empty_dir) not in caplog.text
 
     def test_env_var_not_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FREQTRADE_DOCS_PATH", raising=False)
@@ -109,6 +116,26 @@ class TestLoadDocsIndex:
         assert title == "Strategy Callbacks"
         assert "custom_stoploss" in content
         assert size > 0
+
+    def test_read_failure_does_not_expose_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Read errors may identify a topic, but never its absolute path or raw error."""
+        doc_file = tmp_path / "private-notes.md"
+        doc_file.write_text("# Private notes")
+
+        def fail_read_text(_path: Path, *, encoding: str) -> str:
+            del encoding
+            raise OSError(f"cannot read {doc_file}")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+        assert _scan_directory(tmp_path, tmp_path) == {}
+        assert "private-notes" in caplog.text
+        assert str(tmp_path) not in caplog.text
+        assert "cannot read" not in caplog.text
 
 
 class TestListDocs:

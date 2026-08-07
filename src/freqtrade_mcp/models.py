@@ -50,7 +50,7 @@ class ListEnumsInput(BaseModel):
 
     filter: str | None = Field(
         default=None,
-        description="Optional filter pattern to narrow enum results.",
+        description="Optional keyword filter to narrow enum results.",
         max_length=256,
     )
 

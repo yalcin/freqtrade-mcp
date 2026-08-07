@@ -191,7 +191,10 @@ def validate_filter_string(value: str, label: str = "filter") -> str:
     """
     normalized = value.strip()
     if not normalized or len(normalized) > MAX_INPUT_LENGTH:
-        msg = f"Invalid {label}: must be 1-{MAX_INPUT_LENGTH} non-empty characters."
+        msg = (
+            f"Invalid {label}: must be 1-{MAX_INPUT_LENGTH} non-empty characters, "
+            f"got {len(normalized)}."
+        )
         raise ValidationError(msg)
 
     if not FILTER_PATTERN.match(normalized):

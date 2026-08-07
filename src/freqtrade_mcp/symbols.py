@@ -58,8 +58,8 @@ def _freqtrade_package_root() -> Path:
     try:
         spec = importlib.util.find_spec(ALLOWED_TOP_LEVEL_MODULE)
     except (ImportError, ValueError) as e:
-        msg = f"Cannot locate the '{ALLOWED_TOP_LEVEL_MODULE}' package: {e}"
-        raise ModuleImportError(msg) from e
+        msg = f"Cannot locate the '{ALLOWED_TOP_LEVEL_MODULE}' package ({type(e).__name__})."
+        raise ModuleImportError(msg) from None
 
     locations = list(spec.submodule_search_locations or []) if spec else []
     if not locations:
@@ -203,7 +203,7 @@ def build_symbol_index() -> SymbolIndex:
         try:
             tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
         except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as e:
-            logger.warning("Cannot parse %s: %s: %s", source_file, type(e).__name__, e)
+            logger.warning("Cannot parse %s: %s", module_path, type(e).__name__)
             unreadable.append(module_path)
             continue
         parsed.append((module_path, tree, source_file))

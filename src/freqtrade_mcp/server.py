@@ -184,7 +184,7 @@ async def freqtrade_get_class_info(
 async def freqtrade_list_enums(
     filter: Annotated[  # noqa: A002
         str | None,
-        Field(description="Optional filter pattern to narrow enum results.", max_length=256),
+        Field(description="Optional keyword filter to narrow enum results.", max_length=256),
     ] = None,
 ) -> list[dict[str, Any]]:
     """List all trading-related enums from freqtrade.
@@ -628,7 +628,7 @@ def main() -> None:
 
     docs_path = _discover_docs_path()
     if docs_path:
-        logger.info("Freqtrade docs available at: %s", docs_path)
+        logger.info("Freqtrade documentation is available")
     else:
         logger.warning(
             "Freqtrade docs not found. Doc tools will return guidance. Set %s to enable.",

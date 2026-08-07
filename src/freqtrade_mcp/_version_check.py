@@ -96,13 +96,17 @@ def check_freqtrade_importable() -> None:
         # it would escape both this handler and main()'s, killing the server
         # with no diagnostic instead of degrading to a warning.
         # KeyboardInterrupt is deliberately not caught.
+        reason = type(exc).__name__
+        if isinstance(exc, ModuleNotFoundError) and exc.name:
+            reason = f"{reason}: missing dependency {exc.name!r}"
+
         msg = (
             f"freqtrade is installed but '{module_path}' cannot be imported "
-            f"({type(exc).__name__}: {exc}). This usually means an optional "
+            f"({reason}). This usually means an optional "
             "freqtrade dependency is absent — scipy in particular is only "
             "installed by the 'hyperopt' extra. Install it in the same "
             "environment as freqtrade-mcp, e.g. 'pip install freqtrade[hyperopt]'."
         )
-        raise VersionError(msg) from exc
+        raise VersionError(msg) from None
 
     logger.info("freqtrade strategy interface imported successfully")

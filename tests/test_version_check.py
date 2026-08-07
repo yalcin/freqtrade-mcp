@@ -113,9 +113,9 @@ class TestCheckFreqtradeImportable:
         with (
             patch(
                 "freqtrade_mcp._version_check.importlib.import_module",
-                side_effect=ModuleNotFoundError("No module named 'scipy'"),
+                side_effect=ModuleNotFoundError("No module named 'scipy'", name="scipy"),
             ),
-            pytest.raises(VersionError, match="cannot be imported"),
+            pytest.raises(VersionError, match="missing dependency 'scipy'"),
         ):
             check_freqtrade_importable()
 
@@ -146,3 +146,20 @@ class TestCheckFreqtradeImportable:
             pytest.raises(VersionError, match="SystemExit"),
         ):
             check_freqtrade_importable()
+
+    def test_does_not_expose_raw_exception_details(self) -> None:
+        """Import diagnostics must not disclose absolute paths or raw messages."""
+        fixture_path = "/home/alice/.config/private-token"
+        with (
+            patch(
+                "freqtrade_mcp._version_check.importlib.import_module",
+                side_effect=OSError(f"cannot read {fixture_path}"),
+            ),
+            pytest.raises(VersionError) as exc_info,
+        ):
+            check_freqtrade_importable()
+
+        assert "OSError" in str(exc_info.value)
+        assert fixture_path not in str(exc_info.value)
+        assert "cannot read" not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-08
+
 ### Changed (symbol search and documentation)
 
 - `freqtrade_search_codebase` now searches a **static index built with `ast`**
@@ -55,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicitly, as are invalid enum and DataFrame-context requests.
 - Regression tests cover event-loop offloading and the real installed
   configuration schema; the test suite now enforces at least 90% coverage.
+- Import failures, static parse warnings, and documentation discovery logs no
+  longer include raw exception text or absolute filesystem paths.
+- Source distributions exclude local GitNexus indexes and generated agent
+  instruction files, preventing workspace analysis artifacts from being shipped.
 
 ### Fixed
 
@@ -110,16 +116,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   skipped silently, so the only tests exercising the live package never ran.
 - `anyio` and `packaging` are now explicit dependencies (previously only
   transitive, via `mcp` and `freqtrade` respectively).
-
-### Removed
-
-- Automatic PyPI publishing in this fork. The `freqtrade-mcp-server` project on
-  PyPI, along with the author and URLs in `pyproject.toml`, belongs to the
-  upstream repository, and trusted publishing is configured there rather than
-  here. The workflow now builds on demand (`workflow_dispatch`) so packaging
-  stays verifiable; changes made here are meant to go upstream as pull requests.
-
-## [0.1.2] - 2026-07-19
 
 ### Changed
 
@@ -184,7 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI/CD with GitHub Actions
 - Security documentation with MCP threat model
 
-[Unreleased]: https://github.com/yalcin/freqtrade-mcp/compare/v0.1.2...HEAD
-[0.1.2]: https://github.com/yalcin/freqtrade-mcp/compare/v0.1.1...v0.1.2
+[Unreleased]: https://github.com/yalcin/freqtrade-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yalcin/freqtrade-mcp/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/yalcin/freqtrade-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yalcin/freqtrade-mcp/releases/tag/v0.1.0

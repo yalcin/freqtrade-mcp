@@ -197,7 +197,7 @@ class TestValidateFilterString:
 
     def test_empty_filter(self) -> None:
         """Empty filter should fail."""
-        with pytest.raises(ValidationError, match="must be 1-"):
+        with pytest.raises(ValidationError, match="got 0"):
             validate_filter_string("")
 
     def test_hyphens_and_spaces_allowed(self) -> None:
@@ -207,7 +207,7 @@ class TestValidateFilterString:
 
     def test_whitespace_only_rejected(self) -> None:
         """Whitespace-only filters should fail."""
-        with pytest.raises(ValidationError, match="must be 1-"):
+        with pytest.raises(ValidationError, match="got 0"):
             validate_filter_string("   ")
 
     def test_surrounding_whitespace_stripped(self) -> None:

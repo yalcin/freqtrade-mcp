@@ -51,13 +51,12 @@ def _discover_docs_path() -> Path | None:
 
     p = Path(env_path)
     if p.is_dir() and any(p.glob("*.md")):
-        logger.info("Using docs path from %s: %s", ENV_DOCS_PATH, p)
+        logger.info("Using documentation configured by %s", ENV_DOCS_PATH)
         return p.resolve()
 
     logger.warning(
-        "%s is set to '%s' but no markdown files found there.",
+        "%s is set but does not point to a directory containing markdown files.",
         ENV_DOCS_PATH,
-        env_path,
     )
     return None
 
@@ -127,12 +126,13 @@ def _scan_directory(
         topic = f"{prefix}{md_file.stem}"
         try:
             content = md_file.read_text(encoding="utf-8")
+            size = md_file.stat().st_size
         except (OSError, UnicodeDecodeError) as e:
-            logger.warning("Failed to read %s: %s", md_file, e)
+            logger.warning("Failed to read documentation topic %s: %s", topic, type(e).__name__)
             continue
 
         title = _extract_title(content, md_file.name)
-        index[topic] = (title, content, md_file.stat().st_size)
+        index[topic] = (title, content, size)
 
     return index
 

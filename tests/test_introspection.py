@@ -15,6 +15,7 @@ from freqtrade_mcp.exceptions import (
     ValidationError,
 )
 from freqtrade_mcp.introspection import (
+    _import_module,
     get_callback_info,
     get_class_info,
     get_config_schema,
@@ -35,6 +36,26 @@ from freqtrade_mcp.models import (
     SymbolMatch,
     SymbolSearchResult,
 )
+
+
+class TestImportModule:
+    """Tests for sanitized module import failures."""
+
+    def test_does_not_expose_raw_exception_details(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tool-visible errors must not disclose absolute paths or raw messages."""
+        fixture_path = "/home/alice/.config/private-token"
+
+        def fail_import(_module_path: str) -> None:
+            raise OSError(f"cannot read {fixture_path}")
+
+        monkeypatch.setattr("freqtrade_mcp.introspection.importlib.import_module", fail_import)
+        with pytest.raises(ModuleImportError) as exc_info:
+            _import_module("freqtrade.strategy.interface")
+
+        assert "OSError" in str(exc_info.value)
+        assert fixture_path not in str(exc_info.value)
+        assert "cannot read" not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
 
 
 class TestListStrategyMethods:

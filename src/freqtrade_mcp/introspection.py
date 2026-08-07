@@ -79,8 +79,8 @@ def _import_module(module_path: str) -> ModuleType:
         # when the optional plotly dependency is missing, and SystemExit is a
         # BaseException that an `except Exception` would let through.
         # KeyboardInterrupt is deliberately not caught.
-        msg = f"Cannot import module '{module_path}': {type(e).__name__}: {e}"
-        raise ModuleImportError(msg) from e
+        msg = f"Cannot import module '{module_path}': {type(e).__name__}."
+        raise ModuleImportError(msg) from None
 
 
 def _get_class_from_path(class_path: str) -> type[Any]:
@@ -340,7 +340,7 @@ def list_enums(filter_str: str | None = None) -> list[EnumSummary]:
     """List trading-related enums from freqtrade.
 
     Args:
-        filter_str: Optional filter pattern.
+        filter_str: Optional keyword filter.
 
     Returns:
         List of enum summaries.

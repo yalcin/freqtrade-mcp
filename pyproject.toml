@@ -46,6 +46,13 @@ Repository = "https://github.com/yalcin/freqtrade-mcp"
 Issues = "https://github.com/yalcin/freqtrade-mcp/issues"
 Changelog = "https://github.com/yalcin/freqtrade-mcp/blob/master/CHANGELOG.md"
 
+[tool.hatch.build]
+exclude = [
+    "/.gitnexus/",
+    "/AGENTS.md",
+    "/CLAUDE.md",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/freqtrade_mcp"]
 
