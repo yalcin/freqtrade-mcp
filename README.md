@@ -201,6 +201,13 @@ ruff format src/ tests/
 mypy src/
 ```
 
+## Contributors
+
+- [Yalçın Açıkyıldız](https://github.com/yalcin) — Project creator and maintainer.
+- [Giovanni Degiorgi](https://github.com/degiorgig) — Contributor to the security hardening, runtime improvements, and MCP introspection updates in [pull request #1](https://github.com/yalcin/freqtrade-mcp/pull/1).
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for project credits.
+
 ## License
 
 [GPLv3](LICENSE)
