@@ -1,16 +1,21 @@
 """Tests for the introspection engine."""
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from freqtrade_mcp.constants import MAX_SYMBOL_SEARCH_RESULTS
 from freqtrade_mcp.exceptions import (
     ClassNotFoundError,
     IntrospectionError,
     MethodNotFoundError,
     ModuleImportError,
+    ValidationError,
 )
 from freqtrade_mcp.introspection import (
+    _import_module,
     get_callback_info,
     get_class_info,
     get_config_schema,
@@ -29,7 +34,28 @@ from freqtrade_mcp.models import (
     MethodSignature,
     MethodSummary,
     SymbolMatch,
+    SymbolSearchResult,
 )
+
+
+class TestImportModule:
+    """Tests for sanitized module import failures."""
+
+    def test_does_not_expose_raw_exception_details(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tool-visible errors must not disclose absolute paths or raw messages."""
+        fixture_path = "/home/alice/.config/private-token"
+
+        def fail_import(_module_path: str) -> None:
+            raise OSError(f"cannot read {fixture_path}")
+
+        monkeypatch.setattr("freqtrade_mcp.introspection.importlib.import_module", fail_import)
+        with pytest.raises(ModuleImportError) as exc_info:
+            _import_module("freqtrade.strategy.interface")
+
+        assert "OSError" in str(exc_info.value)
+        assert fixture_path not in str(exc_info.value)
+        assert "cannot read" not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
 
 
 class TestListStrategyMethods:
@@ -170,6 +196,18 @@ class TestListEnums:
         names = [e.name for e in enums]
         assert "SignalDirection" in names
 
+    def test_import_failure_is_not_reported_as_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken installation should raise instead of looking enum-free."""
+
+        def fail_import(_module_path: str) -> None:
+            raise ModuleImportError("broken enum import")
+
+        monkeypatch.setattr("freqtrade_mcp.introspection._import_module", fail_import)
+        with pytest.raises(ModuleImportError, match="broken enum import"):
+            list_enums()
+
 
 class TestGetEnumValues:
     """Tests for get_enum_values."""
@@ -218,10 +256,12 @@ class TestGetConfigSchema:
     """Tests for get_config_schema."""
 
     def test_all_sections(self, fake_freqtrade_modules: Any) -> None:
-        """Should return config keys from all sections."""
+        """Should return every property from the live schema."""
         keys = get_config_schema()
-        assert len(keys) > 0
+        assert {item.key for item in keys} == {"exchange", "pairlists", "stoploss", "strategy"}
         assert all(isinstance(k, ConfigKey) for k in keys)
+        exchange = next(item for item in keys if item.key == "exchange")
+        assert exchange.description.endswith("Required.")
 
     def test_filter_by_section(self, fake_freqtrade_modules: Any) -> None:
         """Should filter by section keyword."""
@@ -231,13 +271,23 @@ class TestGetConfigSchema:
             "exchange" in k.key.lower() or "exchange" in k.description.lower() for k in keys
         )
 
-    def test_returns_known_sections(self, fake_freqtrade_modules: Any) -> None:
-        """Should include well-known config sections."""
-        keys = get_config_schema()
-        key_names = [k.key for k in keys]
-        assert "exchange" in key_names
-        assert "stoploss" in key_names
-        assert "strategy" in key_names
+    def test_description_falls_back_to_schema_type(self, fake_freqtrade_modules: Any) -> None:
+        """Properties without descriptions should still be useful."""
+        keys = get_config_schema(section="strategy")
+        assert len(keys) == 1
+        assert keys[0].description == "Freqtrade configuration key 'strategy' (string)."
+
+    def test_schema_failure_is_not_silently_replaced(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing schema modules should produce an actionable error."""
+
+        def fail_import(_module_path: str) -> None:
+            raise ModuleImportError("schema unavailable")
+
+        monkeypatch.setattr("freqtrade_mcp.introspection._import_module", fail_import)
+        with pytest.raises(IntrospectionError, match="Cannot load"):
+            get_config_schema()
 
 
 class TestGetDataframeColumns:
@@ -278,25 +328,73 @@ class TestGetDataframeColumns:
         assert "ema" in names
 
     def test_invalid_context(self) -> None:
-        """Invalid context should return empty list."""
-        columns = get_dataframe_columns(context="nonexistent")
-        assert len(columns) == 0
+        """Invalid context should list the supported options."""
+        with pytest.raises(ValidationError, match="Expected one of"):
+            get_dataframe_columns(context="nonexistent")
 
 
 class TestSearchCodebase:
-    """Tests for search_codebase."""
+    """Tests for search_codebase.
 
-    def test_search_finds_class(self, fake_freqtrade_modules: Any) -> None:
-        """Should find classes matching pattern."""
-        # Note: search_codebase walks the package tree, which is limited
-        # with fake modules since __path__ is empty. Test with direct module.
-        results = search_codebase("IStrategy")
-        # May or may not find it depending on fake module setup
-        assert isinstance(results, list)
+    The search runs against the statically built symbol index, so these use the
+    fake *source tree* fixture rather than the in-memory module fixture.
+    """
 
-    def test_search_returns_symbol_matches(self, fake_freqtrade_modules: Any) -> None:
-        """Results should be SymbolMatch instances."""
-        results = search_codebase(".*")
-        for r in results:
+    def test_search_finds_class(self, fake_freqtrade_source: Path) -> None:
+        """Should find classes matching a pattern."""
+        result = search_codebase("IStrategy")
+        assert isinstance(result, SymbolSearchResult)
+        assert any(m.name == "IStrategy" for m in result.matches)
+
+    def test_search_returns_symbol_matches(self, fake_freqtrade_source: Path) -> None:
+        """Results should be SymbolMatch instances with a known kind."""
+        result = search_codebase(".*")
+        assert result.matches
+        for r in result.matches:
             assert isinstance(r, SymbolMatch)
             assert r.kind in {"class", "function", "constant", "enum"}
+
+    def test_reports_truncation(self, fake_freqtrade_source: Path) -> None:
+        """A capped search must report the full match count and truncation."""
+        full = search_codebase(".*", max_results=MAX_SYMBOL_SEARCH_RESULTS)
+        assert full.truncated is False
+        assert full.returned == full.total_matches
+
+        capped = search_codebase(".*", max_results=1)
+        assert capped.returned == 1
+        assert len(capped.matches) == 1
+        assert capped.total_matches == full.total_matches
+        assert capped.truncated is True
+
+    def test_max_results_is_clamped(self, fake_freqtrade_source: Path) -> None:
+        """Out-of-range values are clamped rather than trusted blindly."""
+        result = search_codebase(".*", max_results=10_000)
+        assert result.returned <= MAX_SYMBOL_SEARCH_RESULTS
+
+    def test_reports_unparseable_modules(self, fake_freqtrade_source: Path) -> None:
+        """Modules that cannot be parsed must be reported, not dropped silently."""
+        result = search_codebase(".*")
+        assert "freqtrade.broken" in result.skipped_modules
+        assert result.skipped_module_count == 1
+        # The rest of the tree was still indexed.
+        assert result.total_matches > 0
+
+    def test_broken_module_does_not_abort_search(self, fake_freqtrade_source: Path) -> None:
+        """A syntax error in one file must not fail the whole search.
+
+        The previous implementation imported every module: a failure in one of
+        them (or a module calling exit() when an optional dependency was
+        missing) aborted the entire tool call.
+        """
+        result = search_codebase("IStrategy")
+        assert any(m.name == "IStrategy" for m in result.matches)
+
+    def test_search_is_case_insensitive(self, fake_freqtrade_source: Path) -> None:
+        """Patterns are compiled with IGNORECASE."""
+        assert search_codebase("istrategy").total_matches > 0
+
+    def test_no_module_is_imported(self, fake_freqtrade_source: Path) -> None:
+        """Searching must not import anything from the freqtrade namespace."""
+        before = {name for name in sys.modules if name.startswith("freqtrade.")}
+        search_codebase(".*")
+        assert {name for name in sys.modules if name.startswith("freqtrade.")} == before

@@ -9,15 +9,21 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install build tools
         run: pip install build
       - name: Build package
         run: python -m build
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

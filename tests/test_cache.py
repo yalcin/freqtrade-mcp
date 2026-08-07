@@ -67,6 +67,41 @@ class TestTTLCache:
         assert cache.get("key1") == "new"
         assert cache.size == 1
 
+
+class TestTTLCacheBounds:
+    """Tests for the size bound and LRU eviction."""
+
+    def test_evicts_when_over_maxsize(self) -> None:
+        """The cache must not grow past maxsize.
+
+        Expired entries are only dropped when their key is read again, so
+        without a bound every distinct query holds its result for the full TTL.
+        """
+        cache = TTLCache(ttl=60, maxsize=3)
+        for i in range(10):
+            cache.set(f"key{i}", i)
+        assert cache.size == 3
+
+    def test_evicts_least_recently_used(self) -> None:
+        """Reading an entry protects it from the next eviction."""
+        cache = TTLCache(ttl=60, maxsize=2)
+        cache.set("a", 1)
+        cache.set("b", 2)
+
+        assert cache.get("a") == 1  # "a" becomes the most recently used
+        cache.set("c", 3)  # evicts "b"
+
+        assert cache.get("a") == 1
+        assert cache.get("b") is None
+        assert cache.get("c") == 3
+
+    def test_maxsize_is_at_least_one(self) -> None:
+        """A degenerate maxsize must not disable caching entirely."""
+        cache = TTLCache(ttl=60, maxsize=0)
+        cache.set("a", 1)
+        assert cache.get("a") == 1
+        assert cache.size == 1
+
     def test_none_value(self) -> None:
         """None can be stored but get returns None for missing keys too.
 
@@ -148,3 +183,16 @@ class TestTTLCacheDecorator:
         assert greet(name="alice") == "hello alice"
         assert greet(name="bob") == "hello bob"
         assert call_count == 2
+
+    def test_none_result_cached(self) -> None:
+        """A None return value should be cached, not recomputed."""
+        call_count = 0
+
+        @ttl_cache(ttl=60)
+        def lookup() -> None:
+            nonlocal call_count
+            call_count += 1
+
+        assert lookup() is None
+        assert lookup() is None
+        assert call_count == 1

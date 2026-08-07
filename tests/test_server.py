@@ -1,12 +1,24 @@
-"""MCP server integration tests."""
+"""MCP server integration tests.
 
+Every tool is an async coroutine: FastMCP runs synchronous tool functions
+inline on the event loop, so the blocking work is offloaded to a worker thread
+instead. Tests therefore await the tools directly (pytest-asyncio auto mode).
+"""
+
+import logging
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from freqtrade_mcp.constants import ENV_LOG_LEVEL
+from freqtrade_mcp.exceptions import VersionError
 from freqtrade_mcp.server import (
+    _configure_logging,
+    _validate_freqtrade_installation,
     freqtrade_get_callback_info,
     freqtrade_get_class_info,
     freqtrade_get_config_schema,
@@ -26,9 +38,9 @@ from freqtrade_mcp.server import (
 class TestListStrategyMethodsTool:
     """Tests for freqtrade_list_strategy_methods tool."""
 
-    def test_returns_list_of_dicts(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_list_of_dicts(self, fake_freqtrade_modules: Any) -> None:
         """Should return list of dictionaries."""
-        result = freqtrade_list_strategy_methods()
+        result = await freqtrade_list_strategy_methods()
         assert isinstance(result, list)
         assert len(result) > 0
         assert isinstance(result[0], dict)
@@ -36,35 +48,57 @@ class TestListStrategyMethodsTool:
         assert "brief" in result[0]
         assert "is_callback" in result[0]
 
-    def test_with_filter(self, fake_freqtrade_modules: Any) -> None:
+    async def test_with_filter(self, fake_freqtrade_modules: Any) -> None:
         """Should accept filter parameter."""
-        result = freqtrade_list_strategy_methods(filter="entry")
+        result = await freqtrade_list_strategy_methods(filter="entry")
         assert isinstance(result, list)
         names = [m["name"] for m in result]
         assert "populate_entry_trend" in names
 
-    def test_with_none_filter(self, fake_freqtrade_modules: Any) -> None:
+    async def test_with_none_filter(self, fake_freqtrade_modules: Any) -> None:
         """Should work with None filter."""
-        result = freqtrade_list_strategy_methods(filter=None)
+        result = await freqtrade_list_strategy_methods(filter=None)
         assert isinstance(result, list)
         assert len(result) > 0
+
+    async def test_offloads_introspection_to_worker_thread(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Blocking introspection must not execute on the event-loop thread."""
+        caller_thread = threading.get_ident()
+        worker_threads: list[int] = []
+
+        def fake_list_strategy_methods(*, filter_str: str | None = None) -> list[Any]:
+            del filter_str
+            worker_threads.append(threading.get_ident())
+            return []
+
+        monkeypatch.setattr(
+            "freqtrade_mcp.server.list_strategy_methods",
+            fake_list_strategy_methods,
+        )
+
+        assert await freqtrade_list_strategy_methods() == []
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != caller_thread
 
 
 class TestGetMethodSignatureTool:
     """Tests for freqtrade_get_method_signature tool."""
 
-    def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
         """Should return a dictionary with signature details."""
-        result = freqtrade_get_method_signature(method_name="populate_indicators")
+        result = await freqtrade_get_method_signature(method_name="populate_indicators")
         assert isinstance(result, dict)
         assert result["name"] == "populate_indicators"
         assert "parameters" in result
         assert "return_type" in result
         assert "docstring" in result
 
-    def test_parameters_structure(self, fake_freqtrade_modules: Any) -> None:
+    async def test_parameters_structure(self, fake_freqtrade_modules: Any) -> None:
         """Parameters should have proper structure."""
-        result = freqtrade_get_method_signature(method_name="populate_indicators")
+        result = await freqtrade_get_method_signature(method_name="populate_indicators")
         params = result["parameters"]
         assert isinstance(params, list)
         for p in params:
@@ -76,9 +110,11 @@ class TestGetMethodSignatureTool:
 class TestGetClassInfoTool:
     """Tests for freqtrade_get_class_info tool."""
 
-    def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
         """Should return a dictionary with class info."""
-        result = freqtrade_get_class_info(class_path="freqtrade.strategy.interface.IStrategy")
+        result = await freqtrade_get_class_info(
+            class_path="freqtrade.strategy.interface.IStrategy"
+        )
         assert isinstance(result, dict)
         assert result["name"] == "IStrategy"
         assert "method_resolution_order" in result
@@ -89,9 +125,9 @@ class TestGetClassInfoTool:
 class TestListEnumsTool:
     """Tests for freqtrade_list_enums tool."""
 
-    def test_returns_list_of_dicts(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_list_of_dicts(self, fake_freqtrade_modules: Any) -> None:
         """Should return list of enum dictionaries."""
-        result = freqtrade_list_enums()
+        result = await freqtrade_list_enums()
         assert isinstance(result, list)
         assert len(result) >= 2
         for item in result:
@@ -103,9 +139,9 @@ class TestListEnumsTool:
 class TestGetEnumValuesTool:
     """Tests for freqtrade_get_enum_values tool."""
 
-    def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
         """Should return dict with enum members."""
-        result = freqtrade_get_enum_values(enum_path="freqtrade.enums.SignalDirection")
+        result = await freqtrade_get_enum_values(enum_path="freqtrade.enums.SignalDirection")
         assert isinstance(result, dict)
         assert result["name"] == "SignalDirection"
         assert len(result["members"]) == 2
@@ -114,18 +150,49 @@ class TestGetEnumValuesTool:
 class TestSearchCodebaseTool:
     """Tests for freqtrade_search_codebase tool."""
 
-    def test_returns_list(self, fake_freqtrade_modules: Any) -> None:
-        """Should return list of matches."""
-        result = freqtrade_search_codebase(query="Signal")
-        assert isinstance(result, list)
+    async def test_returns_structured_result(self, fake_freqtrade_source: Path) -> None:
+        """Should return a completeness-aware result envelope."""
+        result = await freqtrade_search_codebase(query="IStrategy")
+        assert isinstance(result, dict)
+        assert isinstance(result["matches"], list)
+        assert result["returned"] == len(result["matches"])
+        assert result["total_matches"] >= result["returned"]
+        assert isinstance(result["truncated"], bool)
+        assert isinstance(result["skipped_modules"], list)
+        assert result["skipped_module_count"] >= len(result["skipped_modules"])
+
+    async def test_respects_max_results(self, fake_freqtrade_source: Path) -> None:
+        """Should cap the number of returned symbols and flag truncation."""
+        unlimited = await freqtrade_search_codebase(query=".*", max_results=500)
+        assert unlimited["total_matches"] >= 2, "fixture should expose several symbols"
+
+        capped = await freqtrade_search_codebase(query=".*", max_results=1)
+        assert capped["returned"] == 1
+        assert capped["total_matches"] == unlimited["total_matches"]
+        assert capped["truncated"] is True
+
+    async def test_not_truncated_when_all_returned(self, fake_freqtrade_source: Path) -> None:
+        """Truncated must be False when every match fits in the response."""
+        result = await freqtrade_search_codebase(query=".*", max_results=500)
+        assert result["truncated"] is False
+        assert result["returned"] == result["total_matches"]
+
+    async def test_rejects_out_of_range_max_results(self, fake_freqtrade_source: Path) -> None:
+        """max_results outside 1-500 should be rejected by validation."""
+        from pydantic import ValidationError as PydanticValidationError
+
+        with pytest.raises(PydanticValidationError):
+            await freqtrade_search_codebase(query="IStrategy", max_results=0)
+        with pytest.raises(PydanticValidationError):
+            await freqtrade_search_codebase(query="IStrategy", max_results=501)
 
 
 class TestGetCallbackInfoTool:
     """Tests for freqtrade_get_callback_info tool."""
 
-    def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_dict(self, fake_freqtrade_modules: Any) -> None:
         """Should return callback info dict."""
-        result = freqtrade_get_callback_info(callback_name="custom_stoploss")
+        result = await freqtrade_get_callback_info(callback_name="custom_stoploss")
         assert isinstance(result, dict)
         assert result["name"] == "custom_stoploss"
         assert "signature" in result
@@ -136,27 +203,27 @@ class TestGetCallbackInfoTool:
 class TestGetConfigSchemaTool:
     """Tests for freqtrade_get_config_schema tool."""
 
-    def test_returns_list(self, fake_freqtrade_modules: Any) -> None:
+    async def test_returns_list(self, fake_freqtrade_modules: Any) -> None:
         """Should return list of config keys."""
-        result = freqtrade_get_config_schema()
+        result = await freqtrade_get_config_schema()
         assert isinstance(result, list)
         assert len(result) > 0
         for item in result:
             assert "key" in item
             assert "description" in item
 
-    def test_with_section_filter(self, fake_freqtrade_modules: Any) -> None:
+    async def test_with_section_filter(self, fake_freqtrade_modules: Any) -> None:
         """Should accept section filter."""
-        result = freqtrade_get_config_schema(section="exchange")
+        result = await freqtrade_get_config_schema(section="exchange")
         assert isinstance(result, list)
 
 
 class TestGetDataframeColumnsTool:
     """Tests for freqtrade_get_dataframe_columns tool."""
 
-    def test_returns_list(self) -> None:
+    async def test_returns_list(self) -> None:
         """Should return list of column entries."""
-        result = freqtrade_get_dataframe_columns()
+        result = await freqtrade_get_dataframe_columns()
         assert isinstance(result, list)
         assert len(result) > 0
         for item in result:
@@ -164,9 +231,9 @@ class TestGetDataframeColumnsTool:
             assert "description" in item
             assert "context" in item
 
-    def test_with_context_filter(self) -> None:
+    async def test_with_context_filter(self) -> None:
         """Should accept context filter."""
-        result = freqtrade_get_dataframe_columns(context="ohlcv")
+        result = await freqtrade_get_dataframe_columns(context="ohlcv")
         names = [c["name"] for c in result]
         assert "open" in names
         assert "close" in names
@@ -175,10 +242,10 @@ class TestGetDataframeColumnsTool:
 class TestGetVersionInfoTool:
     """Tests for freqtrade_get_version_info tool."""
 
-    def test_returns_version_dict(self) -> None:
+    async def test_returns_version_dict(self) -> None:
         """Should return version info dictionary."""
         with patch("freqtrade_mcp.server.check_freqtrade_version", return_value="2026.3"):
-            result = freqtrade_get_version_info()
+            result = await freqtrade_get_version_info()
             assert isinstance(result, dict)
             assert "mcp_server_version" in result
             assert "freqtrade_version" in result
@@ -189,26 +256,26 @@ class TestGetVersionInfoTool:
 class TestListDocsTool:
     """Tests for freqtrade_list_docs tool."""
 
-    def test_returns_list_when_available(
+    async def test_returns_list_when_available(
         self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
     ) -> None:
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
-        result = freqtrade_list_docs()
+        result = await freqtrade_list_docs()
         assert isinstance(result, list)
         assert len(result) == 5
         topics = [t["topic"] for t in result]
         assert "strategy-callbacks" in topics
         assert "commands/backtesting" in topics
 
-    def test_returns_error_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_returns_error_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FREQTRADE_DOCS_PATH", raising=False)
-        result = freqtrade_list_docs()
+        result = await freqtrade_list_docs()
         assert isinstance(result, dict)
         assert "error" in result
 
-    def test_with_filter(self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path) -> None:
+    async def test_with_filter(self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path) -> None:
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
-        result = freqtrade_list_docs(filter="strategy")
+        result = await freqtrade_list_docs(filter="strategy")
         assert isinstance(result, list)
         assert len(result) >= 1
 
@@ -216,23 +283,25 @@ class TestListDocsTool:
 class TestSearchDocsTool:
     """Tests for freqtrade_search_docs tool."""
 
-    def test_returns_list_when_available(
+    async def test_returns_list_when_available(
         self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
     ) -> None:
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
-        result = freqtrade_search_docs(query="stoploss")
+        result = await freqtrade_search_docs(query="stoploss")
         assert isinstance(result, list)
         assert len(result) >= 1
 
-    def test_returns_error_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_returns_error_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FREQTRADE_DOCS_PATH", raising=False)
-        result = freqtrade_search_docs(query="anything")
+        result = await freqtrade_search_docs(query="anything")
         assert isinstance(result, dict)
         assert "error" in result
 
-    def test_with_max_results(self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path) -> None:
+    async def test_with_max_results(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
-        result = freqtrade_search_docs(query="the", max_results=1)
+        result = await freqtrade_search_docs(query="the", max_results=1)
         assert isinstance(result, list)
         assert len(result) <= 1
 
@@ -240,24 +309,151 @@ class TestSearchDocsTool:
 class TestGetDocTool:
     """Tests for freqtrade_get_doc tool."""
 
-    def test_returns_dict_when_available(
+    async def test_returns_dict_when_available(
         self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
     ) -> None:
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
-        result = freqtrade_get_doc(topic="strategy-callbacks")
+        result = await freqtrade_get_doc(topic="strategy-callbacks")
         assert isinstance(result, dict)
         assert result["topic"] == "strategy-callbacks"
         assert "content" in result
 
-    def test_returns_error_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_returns_error_when_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("FREQTRADE_DOCS_PATH", raising=False)
-        result = freqtrade_get_doc(topic="strategy-callbacks")
+        result = await freqtrade_get_doc(topic="strategy-callbacks")
         assert isinstance(result, dict)
         assert "error" in result
 
-    def test_topic_not_found(self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path) -> None:
+    async def test_topic_not_found(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
         monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
         from freqtrade_mcp.exceptions import DocTopicNotFoundError
 
         with pytest.raises(DocTopicNotFoundError):
-            freqtrade_get_doc(topic="nonexistent-topic")
+            await freqtrade_get_doc(topic="nonexistent-topic")
+
+    async def test_advertises_sections_and_pagination(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        """The response must carry the navigation fields an agent needs."""
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = await freqtrade_get_doc(topic="strategy-callbacks")
+        assert result["sections"] == ["bot_start", "custom_stoploss"]
+        assert result["truncated"] is False
+        assert result["next_offset"] is None
+        assert result["offset"] == 0
+
+    async def test_section_argument(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = await freqtrade_get_doc(topic="strategy-callbacks", section="bot_start")
+        assert result["section"] == "bot_start"
+        assert "custom_stoploss" not in result["content"]
+
+    async def test_max_chars_truncates(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        result = await freqtrade_get_doc(topic="strategy-callbacks", max_chars=30)
+        assert result["truncated"] is True
+        assert result["next_offset"] == result["returned_chars"]
+
+    async def test_rejects_invalid_pagination_arguments(
+        self, monkeypatch: pytest.MonkeyPatch, fake_docs_dir: Path
+    ) -> None:
+        from pydantic import ValidationError as PydanticValidationError
+
+        monkeypatch.setenv("FREQTRADE_DOCS_PATH", str(fake_docs_dir))
+        with pytest.raises(PydanticValidationError):
+            await freqtrade_get_doc(topic="strategy-callbacks", offset=-1)
+        with pytest.raises(PydanticValidationError):
+            await freqtrade_get_doc(topic="strategy-callbacks", max_chars=0)
+
+
+class TestValidateFreqtradeInstallation:
+    """Tests for _validate_freqtrade_installation."""
+
+    def test_returns_version_when_everything_works(self) -> None:
+        with (
+            patch("freqtrade_mcp.server.check_freqtrade_version", return_value="2026.6"),
+            patch("freqtrade_mcp.server.check_freqtrade_importable"),
+        ):
+            assert _validate_freqtrade_installation() == "2026.6"
+
+    def test_unimportable_freqtrade_is_not_fatal(self) -> None:
+        """A stock freqtrade install must not stop the server from starting.
+
+        freqtrade declares scipy only under its 'hyperopt' extra while
+        freqtrade.data.metrics imports it unconditionally, so on a plain
+        `pip install freqtrade` the strategy interface cannot be imported.
+        Symbol search and the documentation tools work regardless.
+        """
+        with (
+            patch("freqtrade_mcp.server.check_freqtrade_version", return_value="2026.6"),
+            patch(
+                "freqtrade_mcp.server.check_freqtrade_importable",
+                side_effect=VersionError("cannot be imported"),
+            ),
+        ):
+            assert _validate_freqtrade_installation() == "2026.6"
+
+    def test_missing_freqtrade_is_fatal(self) -> None:
+        """A missing or too-old freqtrade still aborts startup."""
+        with (
+            patch(
+                "freqtrade_mcp.server.check_freqtrade_version",
+                side_effect=VersionError("not installed"),
+            ),
+            pytest.raises(VersionError, match="not installed"),
+        ):
+            _validate_freqtrade_installation()
+
+
+class TestConfigureLogging:
+    """Tests for _configure_logging."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_logger(self) -> Iterator[None]:
+        """Restore the package logger state after each test."""
+        pkg_logger = logging.getLogger("freqtrade_mcp")
+        handlers = list(pkg_logger.handlers)
+        level = pkg_logger.level
+        propagate = pkg_logger.propagate
+        yield
+        pkg_logger.handlers = handlers
+        pkg_logger.setLevel(level)
+        pkg_logger.propagate = propagate
+
+    def test_sets_requested_level(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A valid level name should be applied, case-insensitively."""
+        monkeypatch.setenv(ENV_LOG_LEVEL, "debug")
+        _configure_logging()
+        assert logging.getLogger("freqtrade_mcp").level == logging.DEBUG
+
+    def test_unknown_level_falls_back_without_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A module attribute that is not a level must not crash the server.
+
+        ``getattr(logging, "BASIC_FORMAT")`` returns a format string, and
+        feeding that to setLevel() raises ValueError at startup.
+        """
+        monkeypatch.setenv(ENV_LOG_LEVEL, "BASIC_FORMAT")
+        _configure_logging()
+        assert logging.getLogger("freqtrade_mcp").level == logging.WARNING
+
+    def test_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated calls must not stack handlers."""
+        monkeypatch.setenv(ENV_LOG_LEVEL, "INFO")
+        _configure_logging()
+        _configure_logging()
+        _configure_logging()
+        assert len(logging.getLogger("freqtrade_mcp").handlers) == 1
+
+    def test_does_not_propagate_to_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Propagation must stay off so records cannot reach a stdout handler."""
+        monkeypatch.setenv(ENV_LOG_LEVEL, "INFO")
+        _configure_logging()
+        assert logging.getLogger("freqtrade_mcp").propagate is False

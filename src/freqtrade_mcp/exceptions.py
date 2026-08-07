@@ -31,3 +31,7 @@ class MethodNotFoundError(IntrospectionError):
 
 class DocTopicNotFoundError(FreqtradeMCPError):
     """Raised when a requested documentation topic does not exist."""
+
+
+class DocSectionNotFoundError(FreqtradeMCPError):
+    """Raised when a requested section does not exist in a documentation page."""

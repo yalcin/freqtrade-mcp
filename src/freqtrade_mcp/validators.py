@@ -4,15 +4,17 @@ All LLM-generated inputs must pass through these validators before use.
 Uses a whitelist approach: only explicitly allowed patterns are accepted.
 """
 
+import fnmatch
 import re
 
 from freqtrade_mcp.constants import (
     ALLOWED_TOP_LEVEL_MODULE,
     DOC_TOPIC_PATTERN,
+    FILTER_PATTERN,
     IDENTIFIER_PATTERN,
     MAX_INPUT_LENGTH,
     MODULE_PATH_PATTERN,
-    SAFE_REGEX_PATTERN,
+    SAFE_SEARCH_PATTERN,
 )
 from freqtrade_mcp.exceptions import ValidationError
 
@@ -109,15 +111,19 @@ def validate_class_path(path: str) -> tuple[str, str]:
 
 
 def validate_search_pattern(pattern: str) -> re.Pattern[str]:
-    """Validate and compile a search regex pattern.
+    """Validate and compile a safe glob-style symbol search pattern.
 
-    Only allows safe regex characters to prevent ReDoS and injection attacks.
+    User-controlled regular expressions are not evaluated directly. Only
+    literals, ``*`` (any sequence), ``?`` (one character), the legacy ``.*``
+    spelling, and optional leading ``^`` / trailing ``$`` anchors are accepted.
+    Every literal is escaped before compilation, so nested quantifiers and other
+    backtracking constructs cannot be expressed.
 
     Args:
-        pattern: Regex pattern string to validate.
+        pattern: Glob-style search pattern to validate.
 
     Returns:
-        Compiled regex pattern.
+        Compiled safe search pattern.
 
     Raises:
         ValidationError: If the pattern is invalid or contains unsafe characters.
@@ -128,45 +134,77 @@ def validate_search_pattern(pattern: str) -> re.Pattern[str]:
         )
         raise ValidationError(msg)
 
-    if not SAFE_REGEX_PATTERN.match(pattern):
+    if not SAFE_SEARCH_PATTERN.fullmatch(pattern):
         msg = (
             f"Invalid search pattern: '{pattern}' contains unsafe characters. "
-            "Only alphanumeric characters, underscores, and basic regex operators are allowed."
+            "Use letters, digits, underscores, spaces, hyphens, '.', '*', '?', "
+            "and optional leading '^' / trailing '$' anchors."
         )
         raise ValidationError(msg)
 
-    try:
-        return re.compile(pattern, re.IGNORECASE)
-    except re.error as e:
-        msg = f"Invalid regex pattern: '{pattern}' — {e}"
-        raise ValidationError(msg) from e
+    start_anchored = pattern.startswith("^")
+    end_anchored = pattern.endswith("$")
+    body_start = 1 if start_anchored else 0
+    body_end = -1 if end_anchored else len(pattern)
+    body = pattern[body_start:body_end]
+
+    if "^" in body or "$" in body:
+        msg = "Invalid search pattern: '^' and '$' are only allowed at the pattern boundaries."
+        raise ValidationError(msg)
+
+    glob_parts: list[str] = []
+    index = 0
+    while index < len(body):
+        if body.startswith(".*", index):
+            glob_parts.append("*")
+            index += 2
+            continue
+
+        glob_parts.append(body[index])
+        index += 1
+
+    glob_pattern = "".join(glob_parts)
+    if not start_anchored:
+        glob_pattern = f"*{glob_pattern}"
+    if not end_anchored:
+        glob_pattern = f"{glob_pattern}*"
+
+    expression = fnmatch.translate(glob_pattern)
+    if start_anchored:
+        expression = f"^{expression}"
+    return re.compile(expression, re.IGNORECASE)
 
 
 def validate_filter_string(value: str, label: str = "filter") -> str:
-    """Validate a simple filter string (no regex, just alphanumeric + underscore).
+    """Validate a simple filter string (no regex; letters, digits, `_`, `-`, spaces).
 
     Args:
         value: The filter string to validate.
         label: Human-readable label for error messages.
 
     Returns:
-        The validated filter string, lowercased.
+        The validated filter string, stripped and lowercased.
 
     Raises:
-        ValidationError: If the string contains invalid characters.
+        ValidationError: If the string is empty after stripping or contains
+            invalid characters.
     """
-    if not value or len(value) > MAX_INPUT_LENGTH:
-        msg = f"Invalid {label}: must be 1-{MAX_INPUT_LENGTH} characters, got {len(value)}."
-        raise ValidationError(msg)
-
-    if not IDENTIFIER_PATTERN.match(value):
+    normalized = value.strip()
+    if not normalized or len(normalized) > MAX_INPUT_LENGTH:
         msg = (
-            f"Invalid {label}: '{value}' contains invalid characters. "
-            "Only letters, digits, and underscores are allowed."
+            f"Invalid {label}: must be 1-{MAX_INPUT_LENGTH} non-empty characters, "
+            f"got {len(normalized)}."
         )
         raise ValidationError(msg)
 
-    return value.lower()
+    if not FILTER_PATTERN.match(normalized):
+        msg = (
+            f"Invalid {label}: '{value}' contains invalid characters. "
+            "Only letters, digits, underscores, hyphens, and spaces are allowed."
+        )
+        raise ValidationError(msg)
+
+    return normalized.lower()
 
 
 def validate_doc_topic(topic: str) -> str:
@@ -200,6 +238,30 @@ def validate_doc_topic(topic: str) -> str:
         raise ValidationError(msg)
 
     return topic
+
+
+def validate_doc_section(section: str) -> str:
+    """Validate a documentation section heading.
+
+    Headings are free-form markdown text, so this only bounds the length and
+    rejects empty input. The value is matched against the headings actually
+    present in the page, never used to build a path or a pattern.
+
+    Args:
+        section: Section heading to validate.
+
+    Returns:
+        The stripped section heading.
+
+    Raises:
+        ValidationError: If the section is empty or too long.
+    """
+    normalized = section.strip()
+    if not normalized or len(normalized) > MAX_INPUT_LENGTH:
+        msg = f"Invalid doc section: must be 1-{MAX_INPUT_LENGTH} non-empty characters."
+        raise ValidationError(msg)
+
+    return normalized
 
 
 def validate_doc_search_query(query: str) -> str:

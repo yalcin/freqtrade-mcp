@@ -21,8 +21,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp[cli]>=1.26.0",
+    "mcp[cli]>=1.26.0,<2.0",
     "freqtrade>=2026.2",
+    "anyio>=4.5",
+    "packaging>=23.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +44,14 @@ freqtrade-mcp = "freqtrade_mcp.server:main"
 Homepage = "https://github.com/yalcin/freqtrade-mcp"
 Repository = "https://github.com/yalcin/freqtrade-mcp"
 Issues = "https://github.com/yalcin/freqtrade-mcp/issues"
-Changelog = "https://github.com/yalcin/freqtrade-mcp/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/yalcin/freqtrade-mcp/blob/master/CHANGELOG.md"
+
+[tool.hatch.build]
+exclude = [
+    "/.gitnexus/",
+    "/AGENTS.md",
+    "/CLAUDE.md",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/freqtrade_mcp"]
@@ -89,4 +98,7 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "--cov=freqtrade_mcp --cov-report=term-missing --cov-report=html"
+addopts = "--cov=freqtrade_mcp --cov-report=term-missing --cov-report=html --cov-fail-under=90"
+markers = [
+    "integration: exercises a real, importable freqtrade installation (skipped otherwise)",
+]

@@ -25,7 +25,7 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 - **Enum Discovery**: List and inspect all trading-related enums and their values
 - **Codebase Search**: Search for classes, functions, constants, and enums by name pattern
 - **Callback Details**: Get detailed info about strategy callbacks (bot_start, custom_stoploss, etc.)
-- **Config Schema**: Browse known configuration keys and their descriptions
+- **Config Schema**: Browse the installed freqtrade schema and its descriptions
 - **DataFrame Columns**: Discover available DataFrame columns in strategy methods
 - **Documentation Access**: Browse, search, and read freqtrade markdown documentation
 - **Version Info**: Check installed freqtrade and MCP server versions
@@ -33,8 +33,11 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 ## Security
 
 - **Read-only**: No trading, no exchange connections, no side effects
-- **Input validation**: All LLM inputs validated with regex whitelists
+- **Input validation**: All LLM inputs use strict allow-lists and length limits;
+  code search accepts only glob-style patterns built from escaped literals
 - **No eval/exec**: Only uses Python's `inspect` and `ast` modules
+- **No import side effects in search**: symbol search parses source with `ast`
+  rather than importing it, so no third-party module-level code runs
 - **Namespace restricted**: Only inspects `freqtrade.*` modules
 - **stdio transport**: Local-only, no network exposure
 
@@ -42,13 +45,18 @@ Agents should prefer documented public APIs and avoid relying on undocumented Fr
 
 - Python >= 3.13
 - freqtrade >= 2026.2
-- mcp[cli] >= 1.26.0
+- mcp[cli] >= 1.26.0, < 2.0
 
 ## Installation
 
 ```bash
 pip install freqtrade-mcp-server
 ```
+
+> **Important:** Install `freqtrade-mcp-server` into the **same environment** as the
+> freqtrade version you develop against, so introspection reflects the code you
+> actually run. Avoid isolated installs (pipx/uvx): they pull in their own copy of
+> freqtrade, and the server would inspect that copy instead of yours.
 
 Or install from source:
 
@@ -142,14 +150,14 @@ FREQTRADE_DOCS_PATH=/path/to/freqtrade/docs freqtrade-mcp
 | `freqtrade_get_class_info` | Inspect any freqtrade class |
 | `freqtrade_list_enums` | List trading-related enums |
 | `freqtrade_get_enum_values` | Get values of a specific enum |
-| `freqtrade_search_codebase` | Search for symbols by name pattern |
+| `freqtrade_search_codebase` | Search for symbols by name pattern (statically indexed, no imports) |
 | `freqtrade_get_callback_info` | Get detailed callback method info |
 | `freqtrade_get_config_schema` | Browse configuration keys |
 | `freqtrade_get_dataframe_columns` | List DataFrame columns in strategy methods |
 | `freqtrade_get_version_info` | Get version information |
 | `freqtrade_list_docs` | List available documentation topics |
 | `freqtrade_search_docs` | Full-text search across all documentation |
-| `freqtrade_get_doc` | Read a specific documentation page |
+| `freqtrade_get_doc` | Read a documentation page, or one section of it |
 
 ## Configuration
 
@@ -178,6 +186,10 @@ pip install -e ".[dev]"
 
 # Run tests
 pytest
+
+# Run only the smoke tests against a real freqtrade installation
+# (skipped automatically when freqtrade is not importable)
+pytest -m integration
 
 # Lint
 ruff check src/ tests/

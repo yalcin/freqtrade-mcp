@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   lint-and-test:
@@ -13,8 +13,8 @@ jobs:
       matrix:
         python-version: ["3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
@@ -28,3 +28,18 @@ jobs:
         run: mypy src/
       - name: Test
         run: pytest
+      # freqtrade declares scipy only under its "hyperopt" extra, while
+      # freqtrade.data.metrics imports it unconditionally — so on a stock
+      # install the strategy interface cannot be imported and every
+      # integration test silently skips. Install the extra and run them for
+      # real: they are the only tests that exercise the live package.
+      - name: Install freqtrade extras for integration tests
+        run: pip install "freqtrade[hyperopt]"
+      - name: Integration tests
+        run: |
+          set -o pipefail
+          pytest -m integration --no-cov -q | tee result.txt
+          grep -qE "[0-9]+ passed" result.txt || {
+            echo "::error::Integration tests did not run - freqtrade is not importable."
+            exit 1
+          }

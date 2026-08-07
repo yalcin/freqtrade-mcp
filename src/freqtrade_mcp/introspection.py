@@ -1,6 +1,6 @@
 """Core introspection engine for the freqtrade codebase.
 
-Uses Python's ``inspect`` and ``ast`` modules to extract metadata from
+Uses Python's ``inspect`` module to extract metadata from
 freqtrade classes, methods, enums, and configuration. Never uses
 ``eval()`` or ``exec()``.
 """
@@ -9,16 +9,17 @@ import enum
 import importlib
 import inspect
 import logging
-import pkgutil
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 from freqtrade_mcp.cache import ttl_cache
 from freqtrade_mcp.constants import (
-    ALLOWED_TOP_LEVEL_MODULE,
-    CONFIG_SECTIONS,
     DATAFRAME_CONTEXTS,
+    DEFAULT_SYMBOL_SEARCH_RESULTS,
     ISTRATEGY_CLASS_PATH,
+    MAX_REPORTED_SKIPPED_MODULES,
+    MAX_SYMBOL_SEARCH_RESULTS,
     STRATEGY_CALLBACKS,
 )
 from freqtrade_mcp.exceptions import (
@@ -26,6 +27,7 @@ from freqtrade_mcp.exceptions import (
     IntrospectionError,
     MethodNotFoundError,
     ModuleImportError,
+    ValidationError,
 )
 from freqtrade_mcp.models import (
     CallbackInfo,
@@ -38,17 +40,22 @@ from freqtrade_mcp.models import (
     MethodSignature,
     MethodSummary,
     ParameterInfo,
-    SymbolMatch,
+    SymbolSearchResult,
 )
+from freqtrade_mcp.symbols import _freqtrade_package_root, build_symbol_index
 from freqtrade_mcp.validators import (
     validate_class_path,
     validate_filter_string,
     validate_identifier,
-    validate_module_path,
     validate_search_pattern,
 )
 
 logger = logging.getLogger(__name__)
+
+_CONFIG_SCHEMA_MODULES: tuple[str, ...] = (
+    "freqtrade.config_schema",
+    "freqtrade.configuration.config_schema",
+)
 
 
 def _import_module(module_path: str) -> ModuleType:
@@ -65,9 +72,15 @@ def _import_module(module_path: str) -> ModuleType:
     """
     try:
         return importlib.import_module(module_path)
-    except ImportError as e:
-        msg = f"Cannot import module '{module_path}': {e}"
-        raise ModuleImportError(msg) from e
+    except (Exception, SystemExit) as e:
+        # Deliberately broad: importing a module runs its top-level code, which
+        # can raise anything. SystemExit is included on purpose and is not
+        # theoretical — freqtrade.plot.plotting calls exit(1) at import time
+        # when the optional plotly dependency is missing, and SystemExit is a
+        # BaseException that an `except Exception` would let through.
+        # KeyboardInterrupt is deliberately not caught.
+        msg = f"Cannot import module '{module_path}': {type(e).__name__}."
+        raise ModuleImportError(msg) from None
 
 
 def _get_class_from_path(class_path: str) -> type[Any]:
@@ -174,11 +187,17 @@ def _get_source_file(obj: Any) -> str | None:
         return None
 
     # Make it relative if possible
-    ft_marker = f"/{ALLOWED_TOP_LEVEL_MODULE}/"
-    idx = source_file.find(ft_marker)
-    if idx != -1:
-        return source_file[idx + 1 :]
-    return source_file
+    # Anchor on the real package directory. Searching for the first
+    # "/freqtrade/" in the absolute path breaks whenever an ancestor directory
+    # is named freqtrade — the layout freqtrade's own docs and Docker image
+    # use — and would report e.g. "freqtrade/.venv/lib/.../interface.py".
+    try:
+        package_root = _freqtrade_package_root().parent
+        return str(Path(source_file).relative_to(package_root))
+    except (ModuleImportError, ValueError):
+        # Outside the freqtrade package: return the bare filename rather than
+        # leaking an absolute filesystem path.
+        return Path(source_file).name
 
 
 # --- Public API ---
@@ -321,7 +340,7 @@ def list_enums(filter_str: str | None = None) -> list[EnumSummary]:
     """List trading-related enums from freqtrade.
 
     Args:
-        filter_str: Optional filter pattern.
+        filter_str: Optional keyword filter.
 
     Returns:
         List of enum summaries.
@@ -332,12 +351,8 @@ def list_enums(filter_str: str | None = None) -> list[EnumSummary]:
 
     enums: list[EnumSummary] = []
 
-    # Scan the freqtrade.enums module
-    try:
-        enums_module = _import_module("freqtrade.enums")
-    except ModuleImportError:
-        logger.warning("freqtrade.enums module not found")
-        return enums
+    # Do not turn an incomplete installation into a misleading empty result.
+    enums_module = _import_module("freqtrade.enums")
 
     for name in dir(enums_module):
         if name.startswith("_"):
@@ -396,76 +411,52 @@ def get_enum_values(enum_path: str) -> EnumDetail:
 
 
 @ttl_cache()
-def search_codebase(query: str) -> list[SymbolMatch]:
+def search_codebase(
+    query: str,
+    max_results: int = DEFAULT_SYMBOL_SEARCH_RESULTS,
+) -> SymbolSearchResult:
     """Search for symbols in the freqtrade codebase by name pattern.
 
+    Searches a statically built index (see :mod:`freqtrade_mcp.symbols`), so no
+    freqtrade module is imported and no optional dependency can break the scan.
+    Modules whose source could not be parsed are reported in
+    ``skipped_modules`` rather than dropped silently, and the match count is
+    reported separately from the (capped) list of returned symbols.
+
     Args:
-        query: Validated regex search pattern.
+        query: Validated safe glob-style search pattern.
+        max_results: Maximum number of symbols to return.
 
     Returns:
-        List of matching symbols.
+        Search result with matches, truncation state, and skipped modules.
+
+    Raises:
+        ModuleImportError: If the freqtrade package cannot be located.
     """
     pattern = validate_search_pattern(query)
-    matches: list[SymbolMatch] = []
-    visited_modules: set[str] = set()
+    capped_results = max(1, min(max_results, MAX_SYMBOL_SEARCH_RESULTS))
 
-    def _scan_module(module_path: str) -> None:
-        if module_path in visited_modules:
-            return
-        visited_modules.add(module_path)
+    index = build_symbol_index()
+    matches = [symbol for symbol in index.symbols if pattern.search(symbol.name)]
+    returned = matches[:capped_results]
 
-        try:
-            mod = _import_module(module_path)
-        except ModuleImportError:
-            return
+    if index.unreadable_modules:
+        logger.warning(
+            "Symbol search results are incomplete: %d module(s) could not be parsed.",
+            len(index.unreadable_modules),
+        )
 
-        for name in dir(mod):
-            if name.startswith("_"):
-                continue
-            if not pattern.search(name):
-                continue
-
-            obj = getattr(mod, name, None)
-            if obj is None:
-                continue
-
-            # Determine kind
-            if isinstance(obj, type):
-                if issubclass(obj, enum.Enum) and obj is not enum.Enum:
-                    kind = "enum"
-                else:
-                    kind = "class"
-            elif callable(obj):
-                kind = "function"
-            else:
-                kind = "constant"
-
-            # Avoid duplicates from re-exports
-            match = SymbolMatch(name=name, module=module_path, kind=kind)
-            if match not in matches:
-                matches.append(match)
-
-    # Walk freqtrade package tree
-    try:
-        ft_module = importlib.import_module(ALLOWED_TOP_LEVEL_MODULE)
-    except ImportError:
-        return matches
-
-    _scan_module(ALLOWED_TOP_LEVEL_MODULE)
-
-    if hasattr(ft_module, "__path__"):
-        for _importer, modname, _ispkg in pkgutil.walk_packages(
-            ft_module.__path__, prefix=f"{ALLOWED_TOP_LEVEL_MODULE}."
-        ):
-            # Limit search depth for performance
-            if modname.count(".") > 4:
-                continue
-            _scan_module(modname)
-
-    matches.sort(key=lambda m: (m.name, m.module))
-    return matches
+    return SymbolSearchResult(
+        matches=returned,
+        returned=len(returned),
+        total_matches=len(matches),
+        truncated=len(matches) > len(returned),
+        skipped_modules=index.unreadable_modules[:MAX_REPORTED_SKIPPED_MODULES],
+        skipped_module_count=len(index.unreadable_modules),
+    )
 
 
+@ttl_cache()
 def get_callback_info(callback_name: str) -> CallbackInfo:
     """Get detailed information about a strategy callback method.
 
@@ -503,8 +494,86 @@ def get_callback_info(callback_name: str) -> CallbackInfo:
     )
 
 
+def _load_config_properties() -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """Load properties from the installed Freqtrade JSON schema.
+
+    Freqtrade moved the schema module between supported releases, so both the
+    current and legacy import paths are tried. Returning a hardcoded fallback
+    would make an incomplete installation look authoritative and drift from the
+    installed version.
+
+    Returns:
+        Tuple of property definitions and required property names.
+
+    Raises:
+        IntrospectionError: If no supported schema module exposes CONF_SCHEMA.
+    """
+    failures: list[str] = []
+
+    for module_path in _CONFIG_SCHEMA_MODULES:
+        try:
+            module = _import_module(module_path)
+        except ModuleImportError as exc:
+            failures.append(str(exc))
+            continue
+
+        schema = getattr(module, "CONF_SCHEMA", None)
+        if not isinstance(schema, dict):
+            failures.append(f"'{module_path}' does not expose a dictionary CONF_SCHEMA")
+            continue
+
+        raw_properties = schema.get("properties")
+        if not isinstance(raw_properties, dict):
+            failures.append(f"'{module_path}.CONF_SCHEMA' has no properties mapping")
+            continue
+
+        properties = {
+            name: definition
+            for name, definition in raw_properties.items()
+            if isinstance(name, str) and isinstance(definition, dict)
+        }
+        raw_required = schema.get("required", [])
+        if not isinstance(raw_required, list):
+            raw_required = []
+        required = {name for name in raw_required if isinstance(name, str)}
+        return properties, required
+
+    detail = "; ".join(failures) if failures else "no schema module was available"
+    msg = f"Cannot load the installed Freqtrade configuration schema: {detail}"
+    raise IntrospectionError(msg)
+
+
+def _describe_config_property(
+    key: str,
+    definition: dict[str, Any],
+    *,
+    required: bool,
+) -> str:
+    """Create a concise description from one JSON-schema property."""
+    raw_description = definition.get("description")
+    if isinstance(raw_description, str) and raw_description.strip():
+        description = raw_description.strip()
+    else:
+        schema_type = definition.get("type")
+        reference = definition.get("$ref")
+        if isinstance(schema_type, list):
+            type_label = " or ".join(str(item) for item in schema_type)
+        elif isinstance(schema_type, str):
+            type_label = schema_type
+        elif isinstance(reference, str):
+            type_label = reference.rsplit("/", maxsplit=1)[-1]
+        else:
+            type_label = "unspecified type"
+        description = f"Freqtrade configuration key '{key}' ({type_label})."
+
+    if required:
+        description = f"{description.rstrip()} Required."
+    return description
+
+
+@ttl_cache()
 def get_config_schema(section: str | None = None) -> list[ConfigKey]:
-    """Return known configuration keys and descriptions.
+    """Return configuration keys from the installed Freqtrade schema.
 
     Args:
         section: Optional section filter.
@@ -516,33 +585,16 @@ def get_config_schema(section: str | None = None) -> list[ConfigKey]:
     if section:
         validated_section = validate_filter_string(section, label="config section")
 
-    # Try to get config keys from freqtrade's configuration module
+    properties, required = _load_config_properties()
     config_keys: list[ConfigKey] = []
 
-    # Always include known top-level sections
-    for key in CONFIG_SECTIONS:
-        if validated_section and validated_section not in key.lower():
-            continue
-        config_keys.append(ConfigKey(key=key, description=f"Freqtrade '{key}' configuration."))
-
-    # Try to extract more config info from freqtrade.configuration if available
-    try:
-        config_mod = _import_module("freqtrade.configuration")
-        for name in sorted(dir(config_mod)):
-            if name.startswith("_"):
+    for key, definition in sorted(properties.items()):
+        description = _describe_config_property(key, definition, required=key in required)
+        if validated_section:
+            searchable = f"{key} {description}".lower()
+            if validated_section not in searchable:
                 continue
-            obj = getattr(config_mod, name, None)
-            if isinstance(obj, dict) and name.upper() == name:
-                if validated_section and validated_section not in name.lower():
-                    continue
-                config_keys.append(
-                    ConfigKey(
-                        key=name,
-                        description=f"Configuration constant: {name} ({len(obj)} entries)",
-                    )
-                )
-    except ModuleImportError:
-        pass
+        config_keys.append(ConfigKey(key=key, description=description))
 
     return config_keys
 
@@ -551,14 +603,22 @@ def get_dataframe_columns(context: str | None = None) -> list[DataframeColumn]:
     """List common DataFrame columns available in strategy methods.
 
     Args:
-        context: Optional context filter ('ohlcv', 'entry', 'exit').
+        context: Optional context filter ('ohlcv', 'entry', 'exit', 'indicators').
 
     Returns:
         List of DataFrame column entries.
+
+    Raises:
+        ValidationError: If context is not one of the documented options.
     """
     validated_context: str | None = None
     if context:
         validated_context = validate_filter_string(context, label="dataframe context")
+        allowed_contexts = {*DATAFRAME_CONTEXTS, "indicators"}
+        if validated_context not in allowed_contexts:
+            options = ", ".join(sorted(allowed_contexts))
+            msg = f"Invalid dataframe context: '{context}'. Expected one of: {options}."
+            raise ValidationError(msg)
 
     columns: list[DataframeColumn] = []
 
@@ -568,7 +628,7 @@ def get_dataframe_columns(context: str | None = None) -> list[DataframeColumn]:
         for col_name, col_desc in ctx_columns.items():
             columns.append(DataframeColumn(name=col_name, description=col_desc, context=ctx_name))
 
-    # If indicators context requested, try to discover common technical indicators
+    # Conventional indicator names — these columns exist only if the strategy computes them
     if validated_context == "indicators" or validated_context is None:
         indicator_columns = {
             "rsi": "Relative Strength Index (float64)",
@@ -590,56 +650,12 @@ def get_dataframe_columns(context: str | None = None) -> list[DataframeColumn]:
         }
         for col_name, col_desc in indicator_columns.items():
             columns.append(
-                DataframeColumn(name=col_name, description=col_desc, context="indicators")
+                DataframeColumn(
+                    name=col_name,
+                    description=f"{col_desc} — conventional name; present only if the "
+                    "strategy computes it in populate_indicators",
+                    context="indicators",
+                )
             )
 
     return columns
-
-
-def _discover_submodules(module_path: str) -> list[str]:
-    """Discover submodule names for a given module path.
-
-    Args:
-        module_path: The dotted module path to discover submodules for.
-
-    Returns:
-        List of submodule dotted paths.
-    """
-    validate_module_path(module_path)
-    try:
-        mod = _import_module(module_path)
-    except ModuleImportError:
-        return []
-
-    submodules: list[str] = []
-    if hasattr(mod, "__path__"):
-        for _, modname, _ in pkgutil.iter_modules(mod.__path__, prefix=f"{module_path}."):
-            submodules.append(modname)
-
-    return sorted(submodules)
-
-
-def find_enums_in_module(module_path: str) -> list[tuple[str, type[enum.Enum]]]:
-    """Find all Enum subclasses in a module.
-
-    Args:
-        module_path: Validated module path.
-
-    Returns:
-        List of (name, enum_class) tuples.
-    """
-    validate_module_path(module_path)
-    try:
-        mod = _import_module(module_path)
-    except ModuleImportError:
-        return []
-
-    results: list[tuple[str, type[enum.Enum]]] = []
-    for name in dir(mod):
-        if name.startswith("_"):
-            continue
-        obj = getattr(mod, name, None)
-        if isinstance(obj, type) and issubclass(obj, enum.Enum) and obj is not enum.Enum:
-            results.append((name, obj))
-
-    return sorted(results, key=lambda x: x[0])
