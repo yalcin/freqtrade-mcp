@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-08
+## [0.2.0] - 2026-08-09
 
 ### Changed (symbol search and documentation)
 
@@ -59,8 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration schema; the test suite now enforces at least 90% coverage.
 - Import failures, static parse warnings, and documentation discovery logs no
   longer include raw exception text or absolute filesystem paths.
-- Source distributions exclude local GitNexus indexes and generated agent
-  instruction files, preventing workspace analysis artifacts from being shipped.
+- Source distributions exclude local GitNexus indexes, Serena project metadata,
+  and generated agent instruction files, preventing workspace analysis artifacts
+  from being shipped.
 - The MCP SDK dependency is constrained to the compatible 1.x line; MCP 2.0
   renamed `FastMCP` to `MCPServer` and requires a separate migration.
 

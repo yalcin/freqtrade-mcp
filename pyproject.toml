@@ -49,6 +49,7 @@ Changelog = "https://github.com/yalcin/freqtrade-mcp/blob/master/CHANGELOG.md"
 [tool.hatch.build]
 exclude = [
     "/.gitnexus/",
+    "/.serena/",
     "/AGENTS.md",
     "/CLAUDE.md",
 ]
